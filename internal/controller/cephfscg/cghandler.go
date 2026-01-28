@@ -137,6 +137,11 @@ func (c *cgHandler) CreateOrUpdateReplicationGroupDestination(
 		util.AddAnnotation(rgd, volsync.OwnerNameAnnotation, c.instance.GetName())
 		util.AddAnnotation(rgd, volsync.OwnerNamespaceAnnotation, c.instance.GetNamespace())
 
+		// Propagate enable-diff annotation from VRG to RGD
+		if util.IsDiffSyncEnabled(c.instance.GetAnnotations()) {
+			util.AddAnnotation(rgd, util.EnableDiffAnnotation, "true")
+		}
+
 		rgd.Spec.VolumeSnapshotClassSelector = c.volumeSnapshotClassSelector
 		rgd.Spec.RDSpecs = rdSpecsInGroup
 
@@ -255,6 +260,11 @@ func (c *cgHandler) CreateOrUpdateReplicationGroupSource(
 		util.AddLabel(rgs, util.VRGOwnerNamespaceLabel, c.instance.GetNamespace())
 		util.AddAnnotation(rgs, volsync.OwnerNameAnnotation, c.instance.GetName())
 		util.AddAnnotation(rgs, volsync.OwnerNamespaceAnnotation, c.instance.GetNamespace())
+
+		// Propagate enable-diff annotation from VRG to RGS
+		if util.IsDiffSyncEnabled(c.instance.GetAnnotations()) {
+			util.AddAnnotation(rgs, util.EnableDiffAnnotation, "true")
+		}
 
 		if runFinalSync {
 			rgs.Spec.Trigger = &ramendrv1alpha1.ReplicationSourceTriggerSpec{

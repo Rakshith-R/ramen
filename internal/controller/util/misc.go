@@ -35,6 +35,9 @@ const (
 	// When this annotation is set to true, VolSync will protect RBD PVCs.
 	UseVolSyncAnnotation = "drplacementcontrol.ramendr.openshift.io/use-volsync-for-pvc-protection"
 
+	// When this annotation is set to true, differential (incremental) syncs will be enabled for CephFS CG.
+	EnableDiffAnnotation = "ramendr.openshift.io/enable-diff"
+
 	MaxK8sLabelLength = validation.DNS1123LabelMaxLength
 	MaxK8sNameLength  = validation.DNS1123LabelMaxLength
 
@@ -406,6 +409,11 @@ func CreateVGRName(prefix string, suffix string) string {
 
 func IsPVCMarkedForVolSync(annotations map[string]string) bool {
 	return annotations[UseVolSyncAnnotation] == "true"
+}
+
+// IsDiffSyncEnabled checks if the enable-diff annotation is set to true on the resource
+func IsDiffSyncEnabled(annotations map[string]string) bool {
+	return annotations[EnableDiffAnnotation] == "true"
 }
 
 func TrimToK8sResourceNameLength(name string) string {

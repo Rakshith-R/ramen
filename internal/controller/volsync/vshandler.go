@@ -404,19 +404,32 @@ func (v *VSHandler) createOrUpdateRD(
 			}
 		}
 
-		rd.Spec.RsyncTLS = &volsyncv1alpha1.ReplicationDestinationRsyncTLSSpec{
-			ServiceType: v.GetRsyncServiceType(),
-			KeySecret:   &pskSecretName,
+		if util.IsDiffSyncEnabled(v.owner.GetAnnotations()) {
+			rd.Spec.External = &volsyncv1alpha1.ReplicationDestinationExternalSpec{
+				Provider: v.defaultCephFSCSIDriverName,
+				Parameters: map[string]string{
+					"destinationPVC":          *dstPVC,
+					"storageClassName":        *rdSpec.ProtectedPVC.StorageClassName,
+					"volumeSnapshotClassName": volumeSnapshotClassName,
+					"copyMethod":              string(volsyncv1alpha1.CopyMethodSnapshot),
+					"secretKey":               pskSecretName,
+				},
+			}
+		} else {
+			rd.Spec.RsyncTLS = &volsyncv1alpha1.ReplicationDestinationRsyncTLSSpec{
+				ServiceType: v.GetRsyncServiceType(),
+				KeySecret:   &pskSecretName,
 
-			ReplicationDestinationVolumeOptions: volsyncv1alpha1.ReplicationDestinationVolumeOptions{
-				CopyMethod:              volsyncv1alpha1.CopyMethodSnapshot,
-				Capacity:                rdSpec.ProtectedPVC.Resources.Requests.Storage(),
-				StorageClassName:        rdSpec.ProtectedPVC.StorageClassName,
-				AccessModes:             pvcAccessModes,
-				VolumeSnapshotClassName: &volumeSnapshotClassName,
-				DestinationPVC:          dstPVC,
-			},
-			MoverConfig: moverConfig,
+				ReplicationDestinationVolumeOptions: volsyncv1alpha1.ReplicationDestinationVolumeOptions{
+					CopyMethod:              volsyncv1alpha1.CopyMethodSnapshot,
+					Capacity:                rdSpec.ProtectedPVC.Resources.Requests.Storage(),
+					StorageClassName:        rdSpec.ProtectedPVC.StorageClassName,
+					AccessModes:             pvcAccessModes,
+					VolumeSnapshotClassName: &volumeSnapshotClassName,
+					DestinationPVC:          dstPVC,
+				},
+				MoverConfig: moverConfig,
+			}
 		}
 
 		return nil
@@ -658,19 +671,32 @@ func (v *VSHandler) createOrUpdateRS(rsSpec ramendrv1alpha1.VolSyncReplicationSo
 			}
 		}
 
-		rs.Spec.RsyncTLS = &volsyncv1alpha1.ReplicationSourceRsyncTLSSpec{
-			KeySecret: &pskSecretName,
-			Address:   &remoteAddress,
+		if util.IsDiffSyncEnabled(v.owner.GetAnnotations()) {
+			rs.Spec.External = &volsyncv1alpha1.ReplicationSourceExternalSpec{
+				Provider: v.defaultCephFSCSIDriverName,
+				Parameters: map[string]string{
+					"copyMethod":              string(volsyncv1alpha1.CopyMethodSnapshot),
+					"storageClassName":        *rsSpec.ProtectedPVC.StorageClassName,
+					"volumeSnapshotClassName": volumeSnapshotClassName,
+					"secretKey":               pskSecretName,
+					"address":                 remoteAddress,
+				},
+			}
+		} else {
+			rs.Spec.RsyncTLS = &volsyncv1alpha1.ReplicationSourceRsyncTLSSpec{
+				KeySecret: &pskSecretName,
+				Address:   &remoteAddress,
 
-			ReplicationSourceVolumeOptions: volsyncv1alpha1.ReplicationSourceVolumeOptions{
-				// Always using CopyMethod of snapshot for now - could use 'Clone' CopyMethod for specific
-				// storage classes that support it in the future
-				CopyMethod:              volsyncv1alpha1.CopyMethodSnapshot,
-				VolumeSnapshotClassName: &volumeSnapshotClassName,
-				StorageClassName:        rsSpec.ProtectedPVC.StorageClassName,
-				AccessModes:             rsSpec.ProtectedPVC.AccessModes,
-			},
-			MoverConfig: *moverConfig,
+				ReplicationSourceVolumeOptions: volsyncv1alpha1.ReplicationSourceVolumeOptions{
+					// Always using CopyMethod of snapshot for now - could use 'Clone' CopyMethod for specific
+					// storage classes that support it in the future
+					CopyMethod:              volsyncv1alpha1.CopyMethodSnapshot,
+					VolumeSnapshotClassName: &volumeSnapshotClassName,
+					StorageClassName:        rsSpec.ProtectedPVC.StorageClassName,
+					AccessModes:             rsSpec.ProtectedPVC.AccessModes,
+				},
+				MoverConfig: *moverConfig,
+			}
 		}
 
 		return nil
