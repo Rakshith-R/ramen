@@ -1841,6 +1841,11 @@ func (d *DRPCInstance) updateVRGOptionalFields(vrg, vrgFromView *rmn.VolumeRepli
 		rmnutil.IsSubmarinerEnabledAnnotation: d.instance.GetAnnotations()[rmnutil.IsSubmarinerEnabledAnnotation],
 	}
 
+	// Only include EnableDiffAnnotation if it has a non-empty value
+	if enableDiffValue := d.drPolicy.GetAnnotations()[rmnutil.EnableDiffAnnotation]; enableDiffValue != "" {
+		vrg.ObjectMeta.Annotations[rmnutil.EnableDiffAnnotation] = enableDiffValue
+	}
+
 	vrg.Spec.ProtectedNamespaces = d.instance.Spec.ProtectedNamespaces
 	vrg.Spec.S3Profiles = AvailableS3Profiles(d.drClusters)
 	vrg.Spec.KubeObjectProtection = d.instance.Spec.KubeObjectProtection

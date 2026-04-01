@@ -90,6 +90,7 @@ func (r *ReplicationGroupDestinationReconciler) Reconcile(ctx context.Context, r
 					VolumeSnapshotClassSelector: rgd.Spec.VolumeSnapshotClassSelector,
 				}, defaultCephFSCSIDriverName, volSyncDestinationCopyMethodOrDefault(ramenConfig), adminNamespaceVRG,
 			),
+			defaultCephFSCSIDriverName,
 			logger,
 		),
 		logger,
