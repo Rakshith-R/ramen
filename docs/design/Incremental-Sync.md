@@ -31,8 +31,8 @@ Diff handler: maintains two VGS via label `ramen.openshift.io/vgs-status`:
 
 | Phase | Action |
 |---|---|
-| Create | New VGS named `{rgs-name}-{unix-timestamp}` with `status=current` |
-| Cleanup | Prune old `previous` VGS → delete current's restored PVCs → transition `current` → `previous` |
+| Create | New VGS `{rgs-name}-{timestamp}`, `status=current` |
+| Cleanup | Prune old previous, delete restored PVCs, current→previous |
 
 At rest: exactly one VGS with `status=previous` serves as base for next cycle.
 
@@ -55,7 +55,7 @@ rs.Spec.External = &ReplicationSourceExternalSpec{
         "baseSnapshotName":   previousSnapshotName,  // from previous VGS
         "targetSnapshotName": currentSnapshotName,    // from current VGS
         "address":            rdService,
-        "secretKey":          volsyncPSKSecretName,
+        "keySecret":          volsyncPSKSecretName,
     },
 }
 ```
@@ -74,14 +74,62 @@ overrides four methods:
 
 | Method | Standard | Diff |
 |---|---|---|
-| CreateOrUpdateVolumeGroupSnapshot | Fixed name, single VGS | Timestamp suffix, status labels |
-| CleanVolumeGroupSnapshot | Deletes VGS + restored PVCs | Preserves previous, transitions current→previous |
-| RestoreVolumesFromVolumeGroupSnapshot | Lookup by fixed name | Lookup by `status=current` label |
-| CreateOrUpdateReplicationSourceForRestoredPVCs | RsyncTLS spec | External spec with base/target params |
+| CreateOrUpdateVGS | Fixed name, single | Timestamp suffix, labels |
+| CleanVGS | Delete VGS + PVCs | Preserve previous, rotate |
+| RestoreFromVGS | Lookup by name | Lookup by status label |
+| CreateOrUpdateRS | RsyncTLS spec | External spec + params |
 
 All other methods inherited: `RestoreVolumesFromSnapshot`,
 `CheckReplicationSourceForRestoredPVCsCompleted`, `WaitIfPVCTooNew`,
 `EnsureApplicationPVCsMounted`.
+
+## Failover Rollback (CopyMethodDirect)
+
+When `CopyMethodDirect` is used, the RD syncs directly into the app
+PVC. On failover the PVC may have partial data from an interrupted
+sync and must be rolled back to the last known good snapshot.
+
+Standard path: local RD + local RS with RsyncTLS copy the entire
+LatestImage snapshot into the app PVC (full copy).
+
+Diff sync path: replaces the full copy with a block-level diff
+rollback using the ceph-volsync-plugin External spec.
+
+### Flow
+
+```
+rollbackToLastSnapshot()
+  1. Pause main RD
+  2. Create current-state snapshot of app PVC
+  3. Wait for snapshot ready (return-and-retry)
+  4. Create local RD (External, CopyMethodDirect, destPVC=appPVC)
+  5. Wait for RD address (plugin populates Status.RsyncTLS.Address)
+  6. Create shallow PVC from LatestImage snapshot
+  7. Create local RS (External) with diff params
+  8. Wait for sync completion
+  9. Pause local RD
+ 10. Cleanup: delete current-state snapshot, shallow PVC, local RS/RD
+```
+
+### Local RS External Spec
+
+```go
+lrs.Spec.External = &ReplicationSourceExternalSpec{
+    Provider: storageClass.Provisioner,
+    Parameters: map[string]string{
+        "copyMethod":         "Direct",
+        "volumeName":         appPVCName,
+        "baseSnapshotName":   currentStateSnapshotName,
+        "targetSnapshotName": latestImageSnapshotName,
+        "address":            localRDServiceAddress,
+        "keySecret":          volsyncPSKSecretName,
+    },
+}
+```
+
+The plugin diffs `baseSnapshotName` (current corrupted state) against
+`targetSnapshotName` (last known good) and writes only the changed
+blocks to `volumeName`, rolling the PVC back efficiently.
 
 ## DR Operations
 

@@ -14,8 +14,6 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -134,7 +132,7 @@ func (m *rgdMachine) Synchronize(ctx context.Context) (mover.Result, error) {
 		if rd.Status.LatestImage != nil {
 			pvcName := m.getDestinationPVCName(rd, i)
 			if pvcName == "" {
-				m.Logger.Info("Skipping RD with empty destination PVC name", "ReplicationDestinationName", rd.Name)
+				m.Logger.Info("WARNING: Skipping RD with empty destination PVC name, check spec", "ReplicationDestinationName", rd.Name)
 
 				continue
 			}
@@ -231,7 +229,7 @@ func (m *rgdMachine) ReconcileRD(
 
 	if m.VSHandler.IsSubmarinerEnabled() {
 		if m.isDiffSyncEnabled() {
-			err = m.reconcileDiffServiceExportForRD(ctx, rd)
+			err = m.VSHandler.ReconcileDiffServiceExportForRD(rd)
 		} else {
 			err = m.VSHandler.ReconcileServiceExportForRD(rd)
 		}
@@ -288,39 +286,6 @@ func (m *rgdMachine) getDestinationPVCName(rd *volsyncv1alpha1.ReplicationDestin
 	return ""
 }
 
-// reconcileDiffServiceExportForRD creates a ServiceExport for the ceph-volsync-plugin service
-// instead of the standard VolSync rsync-tls service
-func (m *rgdMachine) reconcileDiffServiceExportForRD(ctx context.Context, rd *volsyncv1alpha1.ReplicationDestination) error {
-	svcExport := &unstructured.Unstructured{}
-	svcExport.Object = map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"name":      util.GetLocalServiceNameForDiffRD(rd.GetName()),
-			"namespace": rd.GetNamespace(),
-		},
-	}
-	svcExport.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   volsync.ServiceExportGroup,
-		Kind:    volsync.ServiceExportKind,
-		Version: volsync.ServiceExportVersion,
-	})
-
-	_, err := ctrlutil.CreateOrUpdate(ctx, m.Client, svcExport, func() error {
-		util.AddLabel(svcExport, util.CreatedByRamenLabel, "true")
-		util.AddLabel(svcExport, util.ExcludeFromVeleroBackup, "true")
-
-		return ctrlutil.SetOwnerReference(rd, svcExport, m.Client.Scheme())
-	})
-
-	if err != nil {
-		return fmt.Errorf("failed to create ServiceExport for diff RD: %w", err)
-	}
-
-	m.Logger.Info("ServiceExport created for diff sync RD",
-		"ServiceName", util.GetLocalServiceNameForDiffRD(rd.GetName()))
-
-	return nil
-}
-
 func (m *rgdMachine) isDiffSyncEnabled() bool {
 	return util.IsDiffSyncEnabled(m.ReplicationGroupDestination.GetAnnotations())
 }
@@ -353,6 +318,13 @@ func (m *rgdMachine) CreateReplicationDestinations(
 
 	diffEnabled := m.isDiffSyncEnabled()
 
+	storageClass, err := GetStorageClass(ctx, m.Client, rdSpec.ProtectedPVC.StorageClassName)
+	if err != nil {
+		m.Logger.Error(err, "Failed to get StorageClass for provider lookup", "PVCName", rdSpec.ProtectedPVC.Name)
+
+		return nil, err
+	}
+
 	if _, err := ctrlutil.CreateOrUpdate(
 		ctx, m.Client, rd,
 		func() error {
@@ -378,12 +350,14 @@ func (m *rgdMachine) CreateReplicationDestinations(
 					"accessModes":             string(pvcAccessModes[0]),
 					"volumeSnapshotClassName": volumeSnapshotClassName,
 					"keySecret":               pskSecretName,
-					"destinationPVC":          *dstPVC,
+				}
+				if dstPVC != nil {
+					params["destinationPVC"] = *dstPVC
 				}
 
 				rd.Spec.RsyncTLS = nil
 				rd.Spec.External = &volsyncv1alpha1.ReplicationDestinationExternalSpec{
-					Provider:   rdSpec.ProtectedPVC.StorageProvisioner,
+					Provider:   storageClass.Provisioner,
 					Parameters: params,
 				}
 			} else {

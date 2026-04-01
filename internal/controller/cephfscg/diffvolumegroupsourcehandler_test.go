@@ -11,6 +11,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	vgsv1beta1 "github.com/red-hat-storage/external-snapshotter/client/v8/apis/volumegroupsnapshot/v1beta1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -281,6 +283,24 @@ var _ = Describe("DiffVolumeGroupSourceHandler", func() {
 					},
 				},
 			}
+
+			// Create the restored PVC that resolveProvisioner will look up
+			restoredPVC := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "vs-diff-source",
+					Namespace: "default",
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					StorageClassName: &scName,
+					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadOnlyMany},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Gi"),
+						},
+					},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(context.Background(), restoredPVC))).To(BeNil())
 
 			rsList, srcCreatedOrUpdated, err := diffHandler.CreateOrUpdateReplicationSourceForRestoredPVCs(
 				context.Background(), "manual",

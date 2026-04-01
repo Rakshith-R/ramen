@@ -256,7 +256,13 @@ func (h *diffVolumeGroupSourceHandler) CreateOrUpdateVolumeGroupSnapshot(
 		return true, nil
 	}
 
-	// Step 2: No current VGS found, create new one with timestamp suffix
+	return h.createNewVGS(ctx, owner, logger)
+}
+
+// createNewVGS creates a new VolumeGroupSnapshot with a timestamp suffix and status=current label.
+func (h *diffVolumeGroupSourceHandler) createNewVGS(
+	ctx context.Context, owner metav1.Object, logger logr.Logger,
+) (bool, error) {
 	suffix := strconv.FormatInt(time.Now().Unix(), 10)
 	vgsName := fmt.Sprintf("%s-%s", h.VolumeGroupSnapshotName, suffix)
 
@@ -379,6 +385,8 @@ func (h *diffVolumeGroupSourceHandler) CleanVolumeGroupSnapshot(
 
 // RestoreVolumesFromVolumeGroupSnapshot restores VolumeGroupSnapshot to PVCs
 // It finds the current VGS by status label instead of fixed name.
+//
+//nolint:dupl // intentional override — different VGS lookup, same post-processing
 func (h *diffVolumeGroupSourceHandler) RestoreVolumesFromVolumeGroupSnapshot(
 	ctx context.Context, owner metav1.Object,
 ) ([]RestoredPVC, error) {
@@ -412,8 +420,6 @@ func (h *diffVolumeGroupSourceHandler) RestoreVolumesFromVolumeGroupSnapshot(
 }
 
 // CreateOrUpdateReplicationSourceForRestoredPVCs create or update replication source for each restored pvc
-//
-//nolint:funlen
 func (h *diffVolumeGroupSourceHandler) CreateOrUpdateReplicationSourceForRestoredPVCs(
 	ctx context.Context,
 	manual string,
@@ -437,90 +443,13 @@ func (h *diffVolumeGroupSourceHandler) CreateOrUpdateReplicationSourceForRestore
 
 	for _, tmpRestoredPVC := range restoredPVCs {
 		restoredPVC := tmpRestoredPVC
-		logger.Info("Create replication source for restored PVC", "RestoredPVC", restoredPVC.RestoredPVCName)
 
-		originalPVCName := strings.TrimSuffix(restoredPVC.SourcePVCName, util.SuffixForFinalsyncPVC)
-
-		replicationSourceNamespace := h.VolumeGroupSnapshotNamespace
-		replicationSource := &volsyncv1alpha1.ReplicationSource{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      originalPVCName,
-				Namespace: replicationSourceNamespace,
-			},
-		}
-
-		rdService, err := h.resolveRDService(originalPVCName, restoredPVC.RestoredPVCName,
-			vrg, replicationSourceNamespace, isSubmarinerEnabled, logger)
+		ref, op, err := h.createOrUpdateDiffRS(ctx, manual, restoredPVC, previousSnapshotMap, owner, vrg, isSubmarinerEnabled, logger)
 		if err != nil {
-			return nil, false, err
-		}
-
-		pvc, err := util.GetPVC(ctx, h.Client, types.NamespacedName{
-			Name:      restoredPVC.RestoredPVCName,
-			Namespace: replicationSourceNamespace,
-		})
-		if err != nil {
-			logger.Error(err, "Failed to get restored PVC for replication source", "RestoredPVC", restoredPVC.RestoredPVCName)
-
-			return nil, false, err
-		}
-
-		provisioner := h.DefaultCephFSCSIDriverName
-		if pvc.Spec.StorageClassName != nil {
-			storageClass, err := GetStorageClass(ctx, h.Client, pvc.Spec.StorageClassName)
-			if err != nil {
-				logger.Error(err, "Failed to get storage class for restored PVC", "RestoredPVC", restoredPVC.RestoredPVCName)
-
-				return nil, false, err
-			}
-
-			provisioner = storageClass.Provisioner
-		}
-
-		op, err := ctrlutil.CreateOrUpdate(ctx, h.Client, replicationSource, func() error {
-			if err := ctrl.SetControllerReference(owner, replicationSource, h.Client.Scheme()); err != nil {
-				return err
-			}
-
-			util.AddLabel(replicationSource, util.CreatedByRamenLabel, "true")
-			util.AddLabel(replicationSource, util.RGSOwnerLabel, owner.GetName())
-			util.AddAnnotation(replicationSource, volsync.OwnerNameAnnotation, owner.GetName())
-			util.AddAnnotation(replicationSource, volsync.OwnerNamespaceAnnotation, owner.GetNamespace())
-
-			replicationSource.Spec.SourcePVC = restoredPVC.RestoredPVCName
-			replicationSource.Spec.Trigger = &volsyncv1alpha1.ReplicationSourceTriggerSpec{
-				Manual: manual,
-			}
-			replicationSource.Spec.External = &volsyncv1alpha1.ReplicationSourceExternalSpec{
-				Provider: provisioner,
-				Parameters: map[string]string{
-					"keySecret":  h.VolsyncKeySecretName,
-					"address":    rdService,
-					"copyMethod": string(volsyncv1alpha1.CopyMethodDirect),
-					// "storageClassName":
-					// "volumeSnapshotClassName":
-					"volumeName":         tmpRestoredPVC.SourcePVCName,
-					"baseSnapshotName":   previousSnapshotMap[tmpRestoredPVC.SourcePVCName],
-					"targetSnapshotName": tmpRestoredPVC.VolumeSnapshotName,
-				},
-			}
-
-			return nil
-		})
-		if err != nil {
-			logger.Error(err, "Failed to CreateOrUpdate replication source", "RestoredPVC", restoredPVC.RestoredPVCName)
-
 			return nil, createdOrUpdated, err
 		}
 
-		replicationSources = append(replicationSources, &corev1.ObjectReference{
-			APIVersion: replicationSource.APIVersion,
-			Kind:       replicationSource.Kind,
-			Namespace:  replicationSource.Namespace,
-			Name:       replicationSource.Name,
-		})
-
-		logger.Info("replication source successfully reconciled", "operation", op, "RestoredPVC", restoredPVC.RestoredPVCName)
+		replicationSources = append(replicationSources, ref)
 
 		createdOrUpdated = createdOrUpdated ||
 			(op == ctrlutil.OperationResultCreated || op == ctrlutil.OperationResultUpdated)
@@ -529,4 +458,110 @@ func (h *diffVolumeGroupSourceHandler) CreateOrUpdateReplicationSourceForRestore
 	logger.Info("Replication sources are successfully created for all restored PVCs")
 
 	return replicationSources, createdOrUpdated, nil
+}
+
+//nolint:funlen
+func (h *diffVolumeGroupSourceHandler) createOrUpdateDiffRS(
+	ctx context.Context,
+	manual string,
+	restoredPVC RestoredPVC,
+	previousSnapshotMap map[string]string,
+	owner metav1.Object,
+	vrg *ramendrv1alpha1.VolumeReplicationGroup,
+	isSubmarinerEnabled bool,
+	logger logr.Logger,
+) (*corev1.ObjectReference, ctrlutil.OperationResult, error) {
+	logger.Info("Create replication source for restored PVC", "RestoredPVC", restoredPVC.RestoredPVCName)
+
+	originalPVCName := strings.TrimSuffix(restoredPVC.SourcePVCName, util.SuffixForFinalsyncPVC)
+	replicationSourceNamespace := h.VolumeGroupSnapshotNamespace
+
+	replicationSource := &volsyncv1alpha1.ReplicationSource{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      originalPVCName,
+			Namespace: replicationSourceNamespace,
+		},
+	}
+
+	rdService, err := h.resolveRDService(originalPVCName, restoredPVC.RestoredPVCName,
+		vrg, replicationSourceNamespace, isSubmarinerEnabled, logger)
+	if err != nil {
+		return nil, "", err
+	}
+
+	provisioner, err := h.resolveProvisioner(ctx, restoredPVC.RestoredPVCName, replicationSourceNamespace, logger)
+	if err != nil {
+		return nil, "", err
+	}
+
+	op, err := ctrlutil.CreateOrUpdate(ctx, h.Client, replicationSource, func() error {
+		if err := ctrl.SetControllerReference(owner, replicationSource, h.Client.Scheme()); err != nil {
+			return err
+		}
+
+		util.AddLabel(replicationSource, util.CreatedByRamenLabel, "true")
+		util.AddLabel(replicationSource, util.RGSOwnerLabel, owner.GetName())
+		util.AddAnnotation(replicationSource, volsync.OwnerNameAnnotation, owner.GetName())
+		util.AddAnnotation(replicationSource, volsync.OwnerNamespaceAnnotation, owner.GetNamespace())
+
+		replicationSource.Spec.SourcePVC = restoredPVC.RestoredPVCName
+		replicationSource.Spec.Trigger = &volsyncv1alpha1.ReplicationSourceTriggerSpec{
+			Manual: manual,
+		}
+		replicationSource.Spec.External = &volsyncv1alpha1.ReplicationSourceExternalSpec{
+			Provider: provisioner,
+			Parameters: map[string]string{
+				"keySecret":          h.VolsyncKeySecretName,
+				"address":            rdService,
+				"copyMethod":         string(volsyncv1alpha1.CopyMethodDirect),
+				"volumeName":         restoredPVC.SourcePVCName,
+				"baseSnapshotName":   previousSnapshotMap[restoredPVC.SourcePVCName],
+				"targetSnapshotName": restoredPVC.VolumeSnapshotName,
+			},
+		}
+
+		return nil
+	})
+	if err != nil {
+		logger.Error(err, "Failed to CreateOrUpdate replication source", "RestoredPVC", restoredPVC.RestoredPVCName)
+
+		return nil, op, err
+	}
+
+	logger.Info("replication source successfully reconciled", "operation", op, "RestoredPVC", restoredPVC.RestoredPVCName)
+
+	return &corev1.ObjectReference{
+		APIVersion: replicationSource.APIVersion,
+		Kind:       replicationSource.Kind,
+		Namespace:  replicationSource.Namespace,
+		Name:       replicationSource.Name,
+	}, op, nil
+}
+
+// resolveProvisioner gets the StorageClass provisioner for a PVC.
+func (h *diffVolumeGroupSourceHandler) resolveProvisioner(
+	ctx context.Context, pvcName, namespace string, logger logr.Logger,
+) (string, error) {
+	pvc, err := util.GetPVC(ctx, h.Client, types.NamespacedName{
+		Name:      pvcName,
+		Namespace: namespace,
+	})
+	if err != nil {
+		logger.Error(err, "Failed to get restored PVC for replication source", "RestoredPVC", pvcName)
+
+		return "", err
+	}
+
+	if pvc.Spec.StorageClassName != nil {
+		storageClass, err := GetStorageClass(ctx, h.Client, pvc.Spec.StorageClassName)
+		if err != nil {
+			logger.Error(err, "Failed to get storage class for restored PVC", "RestoredPVC", pvcName)
+
+			return "", err
+		}
+
+		return storageClass.Provisioner, nil
+	}
+
+	return h.DefaultCephFSCSIDriverName, nil
 }
