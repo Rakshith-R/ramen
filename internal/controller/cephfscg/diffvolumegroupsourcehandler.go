@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -63,6 +64,30 @@ func NewDiffVolumeGroupSourceHandler(
 				WithValues("VolumeGroupSnapshotNamespace", rgs.Namespace),
 		},
 	}
+}
+
+// resolveRDService overrides the base handler to use the ceph-volsync-plugin service name
+// instead of the standard VolSync rsync-tls service
+func (h *diffVolumeGroupSourceHandler) resolveRDService(
+	originalPVCName, _ string,
+	vrg *ramendrv1alpha1.VolumeReplicationGroup,
+	rsNS string,
+	isSubmarinerEnabled bool,
+	logger logr.Logger,
+) (string, error) {
+	if isSubmarinerEnabled {
+		return util.GetRemoteServiceNameForDiffRDFromPVCName(originalPVCName, rsNS), nil
+	}
+
+	logger.Info("Non submariner diff sync", "rsspec", vrg.Spec.VolSync.RSSpec)
+
+	for _, rs := range vrg.Spec.VolSync.RSSpec {
+		if rs.ProtectedPVC.Name == originalPVCName {
+			return rs.RsyncTLS.Address, nil
+		}
+	}
+
+	return "", fmt.Errorf("no matching RSSpec for diff sync PVC %q", originalPVCName)
 }
 
 // findVGSWithStatus finds a VolumeGroupSnapshot with specific status label owned by this handler
@@ -430,6 +455,28 @@ func (h *diffVolumeGroupSourceHandler) CreateOrUpdateReplicationSourceForRestore
 			return nil, false, err
 		}
 
+		pvc, err := util.GetPVC(ctx, h.Client, types.NamespacedName{
+			Name:      restoredPVC.RestoredPVCName,
+			Namespace: replicationSourceNamespace,
+		})
+		if err != nil {
+			logger.Error(err, "Failed to get restored PVC for replication source", "RestoredPVC", restoredPVC.RestoredPVCName)
+
+			return nil, false, err
+		}
+
+		provisioner := h.DefaultCephFSCSIDriverName
+		if pvc.Spec.StorageClassName != nil {
+			storageClass, err := GetStorageClass(ctx, h.Client, pvc.Spec.StorageClassName)
+			if err != nil {
+				logger.Error(err, "Failed to get storage class for restored PVC", "RestoredPVC", restoredPVC.RestoredPVCName)
+
+				return nil, false, err
+			}
+
+			provisioner = storageClass.Provisioner
+		}
+
 		op, err := ctrlutil.CreateOrUpdate(ctx, h.Client, replicationSource, func() error {
 			if err := ctrl.SetControllerReference(owner, replicationSource, h.Client.Scheme()); err != nil {
 				return err
@@ -445,9 +492,9 @@ func (h *diffVolumeGroupSourceHandler) CreateOrUpdateReplicationSourceForRestore
 				Manual: manual,
 			}
 			replicationSource.Spec.External = &volsyncv1alpha1.ReplicationSourceExternalSpec{
-				Provider: h.DefaultCephFSCSIDriverName,
+				Provider: provisioner,
 				Parameters: map[string]string{
-					"secretKey":  h.VolsyncKeySecretName,
+					"keySecret":  h.VolsyncKeySecretName,
 					"address":    rdService,
 					"copyMethod": string(volsyncv1alpha1.CopyMethodDirect),
 					// "storageClassName":

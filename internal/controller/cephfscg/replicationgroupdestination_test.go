@@ -45,7 +45,7 @@ var _ = Describe("Replicationgroupdestination", func() {
 			k8sClient, rgd, volsync.NewVSHandler(context.Background(), k8sClient, testLogger, rgd,
 				&ramendrv1alpha1.VRGAsyncSpec{}, internalController.DefaultCephFSCSIDriverName,
 				"Direct", false,
-			), testLogger,
+			), internalController.DefaultCephFSCSIDriverName, testLogger,
 		)
 	})
 	Describe("Cleanup", func() {
@@ -99,7 +99,7 @@ var _ = Describe("Replicationgroupdestination", func() {
 					mgrClient, rgd, volsync.NewVSHandler(context.Background(), mgrClient, testLogger, rgd,
 						&ramendrv1alpha1.VRGAsyncSpec{}, internalController.DefaultCephFSCSIDriverName,
 						"Direct", false,
-					), testLogger,
+					), internalController.DefaultCephFSCSIDriverName, testLogger,
 				)
 
 				pskSecretName := volsync.GetVolSyncPSKSecretNameFromVRGName(vrgName)

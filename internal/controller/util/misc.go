@@ -503,3 +503,16 @@ func GetLocalServiceNameForRD(rdName string) string {
 func GetRemoteServiceNameForRDFromPVCName(pvcName, rdNamespace string) string {
 	return fmt.Sprintf("%s.%s.svc.clusterset.local", getLocalServiceNameForRDFromPVCName(pvcName), rdNamespace)
 }
+
+// GetLocalServiceNameForDiffRD returns the service name created by the ceph-volsync-plugin
+// for External ReplicationDestinations using diff sync
+func GetLocalServiceNameForDiffRD(rdName string) string {
+	return GetServiceName("ceph-volsync-dst-", rdName)
+}
+
+// GetRemoteServiceNameForDiffRDFromPVCName returns the remote service name for diff sync RDs
+func GetRemoteServiceNameForDiffRDFromPVCName(pvcName, rdNamespace string) string {
+	diffLocalName := GetLocalServiceNameForDiffRD(GetReplicationDestinationName(pvcName))
+
+	return fmt.Sprintf("%s.%s.svc.clusterset.local", diffLocalName, rdNamespace)
+}

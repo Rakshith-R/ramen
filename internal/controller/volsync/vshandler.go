@@ -406,13 +406,13 @@ func (v *VSHandler) createOrUpdateRD(
 
 		if util.IsDiffSyncEnabled(v.owner.GetAnnotations()) {
 			rd.Spec.External = &volsyncv1alpha1.ReplicationDestinationExternalSpec{
-				Provider: v.defaultCephFSCSIDriverName,
+				Provider: rdSpec.ProtectedPVC.StorageProvisioner,
 				Parameters: map[string]string{
 					"destinationPVC":          *dstPVC,
 					"storageClassName":        *rdSpec.ProtectedPVC.StorageClassName,
 					"volumeSnapshotClassName": volumeSnapshotClassName,
 					"copyMethod":              string(volsyncv1alpha1.CopyMethodSnapshot),
-					"secretKey":               pskSecretName,
+					"keySecret":               pskSecretName,
 				},
 			}
 		} else {
@@ -678,7 +678,7 @@ func (v *VSHandler) createOrUpdateRS(rsSpec ramendrv1alpha1.VolSyncReplicationSo
 					"copyMethod":              string(volsyncv1alpha1.CopyMethodSnapshot),
 					"storageClassName":        *rsSpec.ProtectedPVC.StorageClassName,
 					"volumeSnapshotClassName": volumeSnapshotClassName,
-					"secretKey":               pskSecretName,
+					"keySecret":               pskSecretName,
 					"address":                 remoteAddress,
 				},
 			}
@@ -2868,7 +2868,13 @@ func (v *VSHandler) createPVCFromSnapshot(rd *volsyncv1alpha1.ReplicationDestina
 
 	util.AddLabel(pvc, util.CreatedByRamenLabel, "true")
 
-	pvcRequestedCapacity := rd.Spec.RsyncTLS.Capacity
+	var pvcRequestedCapacity *resource.Quantity
+	if rd.Spec.RsyncTLS != nil {
+		pvcRequestedCapacity = rd.Spec.RsyncTLS.Capacity
+	} else {
+		pvcRequestedCapacity = rdSpec.ProtectedPVC.Resources.Requests.Storage()
+	}
+
 	if snapRestoreSize != nil {
 		if pvcRequestedCapacity == nil || snapRestoreSize.Cmp(*pvcRequestedCapacity) > 0 {
 			pvcRequestedCapacity = snapRestoreSize
@@ -2891,7 +2897,12 @@ func (v *VSHandler) createPVCFromSnapshot(rd *volsyncv1alpha1.ReplicationDestina
 
 		if pvc.CreationTimestamp.IsZero() { // set immutable fields
 			pvc.Spec.AccessModes = accessModes
-			pvc.Spec.StorageClassName = rd.Spec.RsyncTLS.StorageClassName
+
+			if rd.Spec.RsyncTLS != nil {
+				pvc.Spec.StorageClassName = rd.Spec.RsyncTLS.StorageClassName
+			} else {
+				pvc.Spec.StorageClassName = rdSpec.ProtectedPVC.StorageClassName
+			}
 
 			pvc.Spec.DataSource = snapshotRef
 			pvc.Spec.VolumeMode = v.volumeModeForProtectedPVC(&rdSpec.ProtectedPVC)
