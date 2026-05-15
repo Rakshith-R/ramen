@@ -1773,8 +1773,8 @@ func (v *VRGInstance) processAsSecondary() ctrl.Result {
 			util.EventReasonSecondarySuccess, "Secondary Success")
 	}
 
-	// IMPORTANT: resetInitialStatusAsSecondary() MUST be called AFTER reconcileAsSecondary()
-	// because reconcileAsSecondary() clears v.instance.Status.Conditions.
+	// resetInitialStatusAsSecondary() ensures ClusterDataReady and KubeObjectsReady conditions
+	// are set to "Unused" for secondary VRGs. If updated, it requeues before further processing.
 	if v.resetInitialStatusAsSecondary() {
 		v.result.Requeue = true
 
@@ -1799,12 +1799,10 @@ func (v *VRGInstance) reconcileAsSecondary() ctrl.Result {
 	// TODO: Do a final sync of kube resources at the same place where we do the
 	// final sync of the volsync resources.
 
-	// Clear the conditions only if there are no more work as secondary and the RDSpec is not empty.
-	// Note: When using VolSync, we preserve the secondary and we need the status of the VRG to be
-	// clean. In all other cases, the VRG will be deleted and we don't care about the its conditions.
-	if !result.Requeue && len(v.instance.Spec.VolSync.RDSpec) > 0 {
-		v.instance.Status.Conditions = []metav1.Condition{}
-	}
+	// NOTE: Conditions are intentionally NOT cleared here. updateVRGConditionsAndStatus (called after
+	// resetInitialStatusAsSecondary) sets all conditions to reflect current secondary state. Clearing
+	// conditions here caused a reconcile loop: conditions wiped → resetInitialStatusAsSecondary requeues
+	// to re-set them → next reconcile wipes again.
 
 	return result
 }
@@ -1959,7 +1957,8 @@ func (v *VRGInstance) updateVRGStatus(result ctrl.Result) ctrl.Result {
 // on the cluster
 func (v *VRGInstance) updateStatusState() {
 	dataReadyCondition := util.FindCondition(v.instance.Status.Conditions, VRGConditionTypeDataReady)
-	if dataReadyCondition.Status != metav1.ConditionTrue ||
+	if dataReadyCondition == nil ||
+		dataReadyCondition.Status != metav1.ConditionTrue ||
 		dataReadyCondition.ObservedGeneration != v.instance.Generation {
 		v.instance.Status.State = ramendrv1alpha1.UnknownState
 
@@ -2099,12 +2098,10 @@ func (v *VRGInstance) logAndSetConditions(conditionName string, subconditions ..
 
 func (v *VRGInstance) isConditionDataReady() bool {
 	dataReady := util.FindCondition(v.instance.Status.Conditions, VRGConditionTypeDataReady)
-	if dataReady.Status == metav1.ConditionTrue &&
-		dataReady.ObservedGeneration == v.instance.Generation {
-		return true
-	}
 
-	return false
+	return dataReady != nil &&
+		dataReady.Status == metav1.ConditionTrue &&
+		dataReady.ObservedGeneration == v.instance.Generation
 }
 
 func (v *VRGInstance) updateVRGDataReadyCondition() {
