@@ -86,7 +86,7 @@ jobs:
       working-directory: test
       run: |
         source ../venv
-        drenv start --skip-addons envs/minikube-dr-${{ matrix.profile }}.yaml
+        drenv start --skip-addons --skip-tests envs/minikube-dr-${{ matrix.profile }}.yaml
 
     - name: Pre-load Ceph images into minikube
       run: |
