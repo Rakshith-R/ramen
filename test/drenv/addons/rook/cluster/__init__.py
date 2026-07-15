@@ -76,13 +76,25 @@ def wait(cluster):
         context=cluster,
     )
     print("Waiting until cephcluster 'rook-ceph/my-cluster' is ready")
-    kubectl.wait(
-        "cephcluster/my-cluster",
-        "--for=jsonpath={.status.phase}=Ready",
-        "--namespace=rook-ceph",
-        timeout=TIMEOUT,
-        context=cluster,
-    )
+    deadline = time.monotonic() + TIMEOUT
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                f"CephCluster not ready after {TIMEOUT} seconds"
+            )
+        out = kubectl.get(
+            "cephcluster/my-cluster",
+            "--output=jsonpath={.status.phase} {.status.message}",
+            "--namespace=rook-ceph",
+            context=cluster,
+        )
+        phase, _, message = out.partition(" ")
+        elapsed = int(TIMEOUT - remaining)
+        print(f"  [{elapsed}s/{TIMEOUT}s] phase={phase or 'unknown'} {message}")
+        if phase == "Ready":
+            break
+        time.sleep(30)
 
     out = kubectl.get(
         "cephcluster/my-cluster",

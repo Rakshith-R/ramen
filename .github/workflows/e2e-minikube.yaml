@@ -82,7 +82,31 @@ jobs:
         source ../venv
         drenv setup envs/minikube-dr-${{ matrix.profile }}.yaml
 
-    - name: Start clusters
+    - name: Start minikube clusters
+      working-directory: test
+      run: |
+        source ../venv
+        drenv start --skip-addons envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Pre-load Ceph images into minikube
+      run: |
+        IMAGES=(
+          quay.io/ceph/ceph:v20.2.0
+          docker.io/rook/ceph:v1.19.7
+          quay.io/cephcsi/cephcsi:v3.16.2
+        )
+        for img in "${IMAGES[@]}"; do
+          docker pull "$img" &
+        done
+        wait
+        for profile in dr1 dr2; do
+          for img in "${IMAGES[@]}"; do
+            minikube image load "$img" --profile "$profile" &
+          done
+        done
+        wait
+
+    - name: Start addons
       uses: nick-fields/retry@v4
       with:
         timeout_minutes: 30
