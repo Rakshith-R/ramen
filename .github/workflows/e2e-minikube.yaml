@@ -27,6 +27,7 @@ env:
   BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
   DRENV_COMMAND_TIMEOUT: "1200"
   ROOK_CLUSTER_TIMEOUT: "1200"
+  DRENV_LOG_LEVEL: DEBUG
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
