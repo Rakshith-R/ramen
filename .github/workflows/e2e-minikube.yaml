@@ -1,0 +1,166 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+
+# yamllint disable rule:line-length
+---
+name: e2e-minikube
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "DR profile to test"
+        required: true
+        default: "rbd"
+        type: choice
+        options:
+          - rbd
+          - cephfs
+
+permissions:
+  contents: read
+
+env:
+  MAX_WORKERS: 4
+  BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.profile)) || fromJSON('["rbd", "cephfs"]') }}
+
+    steps:
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+          /opt/ghc /usr/share/swift
+        sudo docker image prune -af
+        df -h /
+
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Install CLI tools
+      run: |
+        # clusteradm (OCM)
+        curl -sL "https://github.com/open-cluster-management-io/clusteradm/releases/download/v0.11.2/clusteradm_linux_amd64.tar.gz" \
+          | sudo tar xz -C /usr/local/bin clusteradm
+        # velero
+        curl -sL "https://github.com/vmware-tanzu/velero/releases/download/v1.16.1/velero-v1.16.1-linux-amd64.tar.gz" \
+          | sudo tar xz -C /usr/local/bin --strip-components=1 velero-v1.16.1-linux-amd64/velero
+        # mc (MinIO client)
+        curl -sL "https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2025-08-13T08-35-41Z" \
+          | sudo tee /usr/local/bin/mc > /dev/null && sudo chmod +x /usr/local/bin/mc
+        # kubectl-gather
+        curl -sL "https://github.com/nirs/kubectl-gather/releases/download/v0.13.0/kubectl-gather-v0.13.0-linux-amd64" \
+          | sudo tee /usr/local/bin/kubectl-gather > /dev/null && sudo chmod +x /usr/local/bin/kubectl-gather
+
+    - name: Build ramen-operator container
+      run: make docker-build
+
+    - name: Create virtual environment
+      run: hack/make-venv .venv
+
+    - name: Setup drenv
+      working-directory: test
+      run: |
+        echo test/drenv.log >> "$GITHUB_WORKSPACE/artifacts.txt"
+        source ../venv
+        drenv setup envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Start clusters
+      uses: nick-fields/retry@v4
+      with:
+        timeout_minutes: 30
+        max_attempts: 2
+        command: |
+          cd test
+          source ../venv
+          drenv start --max-workers ${{ env.MAX_WORKERS }} envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Deploy ramen
+      run: |
+        source venv
+        ramendev deploy test/envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Configure ramen
+      uses: nick-fields/retry@v4
+      with:
+        timeout_seconds: 120
+        max_attempts: 3
+        command: |
+          source venv
+          ramendev config test/envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Prepare e2e config
+      working-directory: e2e
+      run: |
+        ENV_NAME="minikube-dr-${{ matrix.profile }}"
+        cat config.yaml.sample ~/.config/drenv/${ENV_NAME}/config.yaml > config.yaml
+
+    - name: Run e2e validation
+      working-directory: e2e
+      run: |
+        echo e2e/validation.log >> "$GITHUB_WORKSPACE/artifacts.txt"
+        ./run.sh -test.run TestValidation -logfile validation.log
+
+    - name: Run e2e dr tests
+      working-directory: e2e
+      run: |
+        echo e2e/dr.log >> "$GITHUB_WORKSPACE/artifacts.txt"
+        ./run.sh -test.run TestDR -logfile dr.log
+
+    - name: Gather environment data
+      if: always()
+      working-directory: test
+      timeout-minutes: 3
+      run: |
+        echo test/gather >> "$GITHUB_WORKSPACE/artifacts.txt"
+        source ../venv
+        drenv gather --directory gather envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Archive artifacts
+      if: always()
+      run: |
+        # Filter out missing paths before archiving
+        xargs -a artifacts.txt -I{} sh -c 'test -e "{}" && echo "{}"' > artifacts-exist.txt || true
+        if [ -s artifacts-exist.txt ]; then
+          tar --create \
+              --gzip \
+              --file e2e-minikube.${{ env.BUILD_ID }}.tar.gz \
+              --transform "s|^|e2e-minikube.${{ env.BUILD_ID }}/|" \
+              --files-from artifacts-exist.txt
+        fi
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: e2e-minikube-${{ matrix.profile }}.${{ env.BUILD_ID }}
+        path: e2e-minikube.${{ env.BUILD_ID }}.tar.gz
+        compression-level: 0
+        retention-days: 15
+
+    - name: Delete clusters
+      if: always()
+      working-directory: test
+      run: |
+        source ../venv
+        drenv delete envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Cleanup drenv
+      if: always()
+      working-directory: test
+      run: |
+        source ../venv
+        drenv cleanup envs/minikube-dr-${{ matrix.profile }}.yaml
