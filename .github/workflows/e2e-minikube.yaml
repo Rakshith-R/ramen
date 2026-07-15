@@ -26,6 +26,7 @@ env:
   MAX_WORKERS: 4
   BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
   DRENV_COMMAND_TIMEOUT: "1200"
+  ROOK_CLUSTER_TIMEOUT: "1200"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -65,13 +66,6 @@ jobs:
         # kubectl-gather
         curl -sL "https://github.com/nirs/kubectl-gather/releases/download/v0.13.0/kubectl-gather-v0.13.0-linux-amd64" \
           | sudo tee /usr/local/bin/kubectl-gather > /dev/null && sudo chmod +x /usr/local/bin/kubectl-gather
-
-    - name: Pre-pull Ceph images
-      run: |
-        docker pull quay.io/ceph/ceph:v20.2.0 &
-        docker pull docker.io/rook/ceph:v1.19.7 &
-        docker pull quay.io/cephcsi/cephcsi:v3.16.2 &
-        wait
 
     - name: Build ramen-operator container
       run: make docker-build

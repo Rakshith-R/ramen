@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -16,7 +17,7 @@ CACHE_KEY = "addons/rook-cluster-1.19-2.yaml"
 
 # The ceph, and ceph-csi images are very large (500m each), using larger
 # timeout to avoid timeouts with flaky network.
-TIMEOUT = 600
+TIMEOUT = int(os.environ.get("ROOK_CLUSTER_TIMEOUT", "600"))
 
 # CSI driver components created by the rook operator as part of the
 # CephCluster reconciliation.
