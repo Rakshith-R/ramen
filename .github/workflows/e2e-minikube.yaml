@@ -25,6 +25,7 @@ permissions:
 env:
   MAX_WORKERS: 4
   BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  ROOK_CLUSTER_TIMEOUT: "1200"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
