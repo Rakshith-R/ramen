@@ -56,17 +56,18 @@ jobs:
     - name: Install CLI tools
       run: |
         # clusteradm (OCM)
-        curl -sL "https://github.com/open-cluster-management-io/clusteradm/releases/download/v0.11.2/clusteradm_linux_amd64.tar.gz" \
+        curl -fSL "https://github.com/open-cluster-management-io/clusteradm/releases/download/v0.11.2/clusteradm_linux_amd64.tar.gz" \
           | sudo tar xz -C /usr/local/bin clusteradm
         # velero
-        curl -sL "https://github.com/vmware-tanzu/velero/releases/download/v1.16.1/velero-v1.16.1-linux-amd64.tar.gz" \
+        curl -fSL "https://github.com/vmware-tanzu/velero/releases/download/v1.16.1/velero-v1.16.1-linux-amd64.tar.gz" \
           | sudo tar xz -C /usr/local/bin --strip-components=1 velero-v1.16.1-linux-amd64/velero
         # mc (MinIO client)
-        curl -sL "https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2025-08-13T08-35-41Z" \
-          | sudo tee /usr/local/bin/mc > /dev/null && sudo chmod +x /usr/local/bin/mc
+        curl -fSL -o /tmp/mc "https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2025-08-13T08-35-41Z"
+        sudo install /tmp/mc /usr/local/bin/mc
+        mc --version
         # kubectl-gather
-        curl -sL "https://github.com/nirs/kubectl-gather/releases/download/v0.13.0/kubectl-gather-v0.13.0-linux-amd64" \
-          | sudo tee /usr/local/bin/kubectl-gather > /dev/null && sudo chmod +x /usr/local/bin/kubectl-gather
+        curl -fSL -o /tmp/kubectl-gather "https://github.com/nirs/kubectl-gather/releases/download/v0.13.0/kubectl-gather-v0.13.0-linux-amd64"
+        sudo install /tmp/kubectl-gather /usr/local/bin/kubectl-gather
 
     - name: Build ramen-operator container
       run: make docker-build
