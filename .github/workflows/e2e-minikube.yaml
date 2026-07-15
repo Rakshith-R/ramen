@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  MAX_WORKERS: 4
+  MAX_WORKERS: 2
   BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
   DRENV_COMMAND_TIMEOUT: "1200"
   ROOK_CLUSTER_TIMEOUT: "1200"
