@@ -167,21 +167,33 @@ jobs:
         echo "=== Host resources ==="
         free -h; df -h /
 
-    - name: Debug ceph-volume raw list
+    - name: Debug ceph-volume raw list (K8s pod context)
       run: |
         set -euo pipefail
         for profile in dr1 dr2; do
-          echo "=== Testing ceph-volume raw list in $profile ==="
-          echo "Devices visible to lsblk:"
-          docker exec "$profile" lsblk -d -o NAME,TYPE,SIZE
-          echo "Running ceph-volume raw list..."
-          docker exec "$profile" ctr -n k8s.io run --rm \
-            --mount type=bind,src=/dev,dst=/dev,options=rbind \
-            --mount type=bind,src=/run/udev,dst=/run/udev,options=rbind \
-            --mount type=bind,src=/sys,dst=/sys,options=rbind \
-            --privileged \
-            quay.io/ceph/ceph:v20.2.0 ceph-debug-$profile \
-            ceph-volume raw list --format json 2>&1 || echo "EXIT CODE: $?"
+          echo "=== Testing ceph-volume in $profile (K8s pod) ==="
+          kubectl --context "$profile" run ceph-debug --rm -i --restart=Never \
+            --image=quay.io/ceph/ceph:v20.2.0 \
+            --overrides='{
+              "spec": {
+                "containers": [{
+                  "name": "ceph-debug",
+                  "image": "quay.io/ceph/ceph:v20.2.0",
+                  "command": ["bash", "-c", "echo DEVICES:; lsblk -d; echo UDEV:; ls /run/udev/data/ 2>&1 | head -5; echo RAW_LIST:; ceph-volume raw list --format json 2>&1; echo EXIT:$?"],
+                  "securityContext": {"privileged": true},
+                  "volumeMounts": [
+                    {"name": "dev", "mountPath": "/dev"},
+                    {"name": "udev", "mountPath": "/run/udev"},
+                    {"name": "sys", "mountPath": "/sys"}
+                  ]
+                }],
+                "volumes": [
+                  {"name": "dev", "hostPath": {"path": "/dev"}},
+                  {"name": "udev", "hostPath": {"path": "/run/udev"}},
+                  {"name": "sys", "hostPath": {"path": "/sys"}}
+                ]
+              }
+            }' 2>&1 || echo "Pod failed with: $?"
         done
 
     - name: Start addons
@@ -228,6 +240,21 @@ jobs:
       run: |
         echo e2e/dr.log >> "$GITHUB_WORKSPACE/artifacts.txt"
         ./run.sh -test.run TestDR -logfile dr.log
+
+    - name: Debug OSD prepare logs
+      if: failure()
+      run: |
+        for profile in dr1 dr2; do
+          echo "=== OSD prepare pods in $profile ==="
+          kubectl --context "$profile" -n rook-ceph get pods -l app=rook-ceph-osd-prepare 2>/dev/null || true
+          for pod in $(kubectl --context "$profile" -n rook-ceph get pods -l app=rook-ceph-osd-prepare -o name 2>/dev/null); do
+            echo "--- Logs: $pod ---"
+            kubectl --context "$profile" -n rook-ceph logs "$pod" --all-containers --previous 2>/dev/null || \
+            kubectl --context "$profile" -n rook-ceph logs "$pod" --all-containers 2>/dev/null || true
+          done
+          echo "--- OSD prepare job status ---"
+          kubectl --context "$profile" -n rook-ceph get jobs -l app=rook-ceph-osd-prepare -o yaml 2>/dev/null | grep -A5 'conditions\|status:' | head -20 || true
+        done
 
     - name: Gather environment data
       if: always()
