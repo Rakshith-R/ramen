@@ -251,19 +251,34 @@ jobs:
         echo e2e/dr.log >> "$GITHUB_WORKSPACE/artifacts.txt"
         ./run.sh -test.run TestDR -logfile dr.log
 
-    - name: Debug OSD prepare logs
-      if: failure()
+    - name: Debug Ceph OSD state
+      if: always()
       run: |
         for profile in dr1 dr2; do
-          echo "=== OSD prepare pods in $profile ==="
-          kubectl --context "$profile" -n rook-ceph get pods -l app=rook-ceph-osd-prepare 2>/dev/null || true
+          echo "======== $profile ========"
+          echo "--- PV/PVC ---"
+          kubectl --context "$profile" get pv,pvc -A 2>/dev/null || true
+          echo "--- StorageClass ---"
+          kubectl --context "$profile" get sc 2>/dev/null || true
+          echo "--- CephCluster status ---"
+          kubectl --context "$profile" -n rook-ceph get cephcluster -o yaml 2>/dev/null | grep -A20 'status:' | head -30 || true
+          echo "--- OSD prepare pods ---"
+          kubectl --context "$profile" -n rook-ceph get pods -l app=rook-ceph-osd-prepare -o wide 2>/dev/null || true
+          echo "--- OSD prepare pod events ---"
           for pod in $(kubectl --context "$profile" -n rook-ceph get pods -l app=rook-ceph-osd-prepare -o name 2>/dev/null); do
-            echo "--- Logs: $pod ---"
-            kubectl --context "$profile" -n rook-ceph logs "$pod" --all-containers --previous 2>/dev/null || \
-            kubectl --context "$profile" -n rook-ceph logs "$pod" --all-containers 2>/dev/null || true
+            echo "Events: $pod"
+            kubectl --context "$profile" -n rook-ceph describe "$pod" 2>/dev/null | grep -A20 'Events:' || true
+            echo "Logs: $pod"
+            kubectl --context "$profile" -n rook-ceph logs "$pod" --all-containers --tail=50 2>/dev/null || true
+            echo "Previous logs: $pod"
+            kubectl --context "$profile" -n rook-ceph logs "$pod" --all-containers --previous --tail=50 2>/dev/null || true
           done
-          echo "--- OSD prepare job status ---"
-          kubectl --context "$profile" -n rook-ceph get jobs -l app=rook-ceph-osd-prepare -o yaml 2>/dev/null | grep -A5 'conditions\|status:' | head -20 || true
+          echo "--- OSD prepare jobs ---"
+          kubectl --context "$profile" -n rook-ceph get jobs -l app=rook-ceph-osd-prepare 2>/dev/null || true
+          echo "--- Rook operator logs (last 30) ---"
+          kubectl --context "$profile" -n rook-ceph logs deploy/rook-ceph-operator --tail=30 2>/dev/null || true
+          echo "--- All rook-ceph pods ---"
+          kubectl --context "$profile" -n rook-ceph get pods -o wide 2>/dev/null || true
         done
 
     - name: Gather environment data
