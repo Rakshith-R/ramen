@@ -40,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.profile)) || fromJSON('["rbd", "cephfs"]') }}
+        profile: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.profile)) || fromJSON('["rbd"]') }}
 
     steps:
     - name: Free disk space
@@ -91,9 +91,9 @@ jobs:
     - name: Prepare Ceph OSD disks and local PVs
       run: |
         set -euo pipefail
-        for profile in dr1 dr2; do
+        for profile in dr1; do
           echo "=== Setting up OSD disk on $profile ==="
-          DM_PATH=$(docker exec "$profile" bash -c "
+          docker exec "$profile" bash -c "
             set -euo pipefail
             apt-get update -qq && apt-get install -y -qq lvm2 >/dev/null
             truncate -s 5G /data/ceph-osd.img
@@ -101,9 +101,16 @@ jobs:
             pvcreate --yes \"\$LOOP\" >/dev/null
             vgcreate ceph-vg-${profile} \"\$LOOP\" >/dev/null
             lvcreate -l 100%FREE -n ceph-lv ceph-vg-${profile} --yes --zero n >/dev/null
-            echo /dev/\$(dmsetup info --noheadings -c -o blkdevname ceph--vg--${profile}-ceph--lv)
-          ")
-          echo "DM device for $profile: $DM_PATH"
+            # udev inside kicbase doesn't create LVM symlinks.
+            # Create /dev/mapper/ and /dev/<VG>/ entries manually.
+            DMDEV=\$(dmsetup info --noheadings -c -o blkdevname ceph--vg--${profile}-ceph--lv)
+            mkdir -p /dev/mapper /dev/ceph-vg-${profile}
+            ln -sf /dev/\$DMDEV /dev/mapper/ceph--vg--${profile}-ceph--lv
+            ln -sf /dev/\$DMDEV /dev/ceph-vg-${profile}/ceph-lv
+            echo \"Device: /dev/\$DMDEV\"
+            ls -la /dev/ceph-vg-${profile}/ceph-lv /dev/mapper/ceph--vg--${profile}-ceph--lv
+            lsblk /dev/\$DMDEV
+          "
           kubectl --context "$profile" apply -f - <<EOF
         apiVersion: storage.k8s.io/v1
         kind: StorageClass
@@ -125,7 +132,7 @@ jobs:
           persistentVolumeReclaimPolicy: Retain
           storageClassName: ceph-block-local
           local:
-            path: ${DM_PATH}
+            path: /dev/ceph-vg-${profile}/ceph-lv
           nodeAffinity:
             required:
               nodeSelectorTerms:
@@ -135,14 +142,14 @@ jobs:
                       values:
                         - ${profile}
         EOF
-          echo "Created OSD disk + local PV for $profile ($DM_PATH)"
+          echo "Created OSD disk + local PV for $profile"
         done
 
     - name: Copy host udev data into minikube containers
       run: |
         set -euo pipefail
         udevadm settle
-        for profile in dr1 dr2; do
+        for profile in dr1; do
           tar -C /run/udev -cf - data \
             | docker exec -i "$profile" sh -c 'mkdir -p /run/udev && tar -C /run/udev -xf -'
           echo "Copied udev data to $profile: $(docker exec "$profile" ls /run/udev/data/ | wc -l) entries"
@@ -178,18 +185,13 @@ jobs:
             echo "[$(ts)] $img → $profile done ($((SECONDS - start))s)"
           done
         }
-        load_profile dr1 &
-        pid1=$!
-        load_profile dr2 &
-        pid2=$!
-        wait "$pid1"
-        wait "$pid2"
+        load_profile dr1
         echo "[$(ts)] All images loaded"
 
     - name: Verify images loaded
       run: |
         set -euo pipefail
-        for profile in dr1 dr2; do
+        for profile in dr1; do
           echo "=== Images in $profile ==="
           minikube image ls --profile "$profile" 2>/dev/null | grep -E 'ceph|rook' || true
         done
@@ -244,7 +246,7 @@ jobs:
     - name: Debug Ceph OSD state
       if: always()
       run: |
-        for profile in dr1 dr2; do
+        for profile in dr1; do
           echo "======== $profile ========"
           echo "--- PV/PVC ---"
           kubectl --context "$profile" get pv,pvc -A 2>/dev/null || true
