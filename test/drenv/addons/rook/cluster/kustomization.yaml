@@ -46,6 +46,9 @@ patches:
         path: /spec/storage/useAllDevices
         value: false
       - op: add
+        path: /spec/storage/deviceFilter
+        value: "^dm-"
+      - op: add
         path: /spec/storage/nodes
         value:
           - name: "dr1"

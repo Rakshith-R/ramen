@@ -96,9 +96,10 @@ jobs:
           docker exec "$profile" bash -c "
             set -euo pipefail
             apt-get update -qq && apt-get install -y -qq lvm2 >/dev/null
-            # Remove host device nodes leaked from GHA runner — ceph-volume
-            # raw list crashes on them (no udev data inside container).
-            rm -f /dev/nvme*
+            # Populate udev database for host devices leaked from GHA runner.
+            # ceph-volume raw list crashes without udev data for block devices.
+            udevadm trigger --type=devices --action=change
+            udevadm settle --timeout=10 || true
             truncate -s 5G /data/ceph-osd.img
             LOOP=\$(losetup --find --show /data/ceph-osd.img)
             echo \"Loop device: \$LOOP\"
@@ -157,6 +158,23 @@ jobs:
         done
         echo "=== Host resources ==="
         free -h; df -h /
+
+    - name: Debug ceph-volume raw list
+      run: |
+        set -euo pipefail
+        for profile in dr1 dr2; do
+          echo "=== Testing ceph-volume raw list in $profile ==="
+          echo "Devices visible to lsblk:"
+          docker exec "$profile" lsblk -d -o NAME,TYPE,SIZE
+          echo "Running ceph-volume raw list..."
+          docker exec "$profile" ctr -n k8s.io run --rm \
+            --mount type=bind,src=/dev,dst=/dev,options=rbind \
+            --mount type=bind,src=/run/udev,dst=/run/udev,options=rbind \
+            --mount type=bind,src=/sys,dst=/sys,options=rbind \
+            --privileged \
+            quay.io/ceph/ceph:v20.2.0 ceph-debug-$profile \
+            ceph-volume raw list --format json 2>&1 || echo "EXIT CODE: $?"
+        done
 
     - name: Start addons
       timeout-minutes: 45
