@@ -175,6 +175,3 @@ def wait_for_csiaddons_nodes(cluster):
                         raise
         except (commands.Error, RuntimeError) as e:
             print(f"Warning: CSIAddonsNode '{name}' not ready: {e}")
-                print(
-                    f"Retrying wait for '{resource}' ({attempt}/{CSIADDONS_ATTEMPTS})"
-                )
