@@ -40,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.profile)) || fromJSON('["rbd"]') }}
+        profile: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.profile)) || fromJSON('["rbd", "cephfs"]') }}
 
     steps:
     - name: Free disk space
@@ -91,7 +91,7 @@ jobs:
     - name: Prepare Ceph OSD disks and local PVs
       run: |
         set -euo pipefail
-        for profile in dr1; do
+        for profile in dr1 dr2; do
           echo "=== Setting up OSD disk on $profile ==="
           docker exec "$profile" bash -c "
             set -euo pipefail
@@ -152,7 +152,7 @@ jobs:
       run: |
         set -euo pipefail
         udevadm settle
-        for profile in dr1; do
+        for profile in dr1 dr2; do
           tar -C /run/udev -cf - data \
             | docker exec -i "$profile" sh -c 'mkdir -p /run/udev && tar -C /run/udev -xf -'
           echo "Copied udev data to $profile: $(docker exec "$profile" ls /run/udev/data/ | wc -l) entries"
@@ -188,13 +188,18 @@ jobs:
             echo "[$(ts)] $img → $profile done ($((SECONDS - start))s)"
           done
         }
-        load_profile dr1
+        load_profile dr1 &
+        pid1=$!
+        load_profile dr2 &
+        pid2=$!
+        wait "$pid1"
+        wait "$pid2"
         echo "[$(ts)] All images loaded"
 
     - name: Verify images loaded
       run: |
         set -euo pipefail
-        for profile in dr1; do
+        for profile in dr1 dr2; do
           echo "=== Images in $profile ==="
           minikube image ls --profile "$profile" 2>/dev/null | grep -E 'ceph|rook' || true
         done
@@ -249,7 +254,7 @@ jobs:
     - name: Debug Ceph OSD state
       if: always()
       run: |
-        for profile in dr1; do
+        for profile in dr1 dr2; do
           echo "======== $profile ========"
           echo "--- PV/PVC ---"
           kubectl --context "$profile" get pv,pvc -A 2>/dev/null || true
