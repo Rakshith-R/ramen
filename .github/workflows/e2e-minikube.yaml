@@ -216,6 +216,21 @@ jobs:
     - name: Build ramen-operator container
       run: make docker-build
 
+    - name: Install VolumeGroupSnapshot CRDs
+      run: |
+        set -euo pipefail
+        # Ramen imports github.com/red-hat-storage/external-snapshotter which
+        # registers groupsnapshot.storage.openshift.io CRDs. The operator
+        # crashes without them. Install CRDs from the red-hat-storage fork.
+        RHS_TAG="release-v8.2"
+        RHS_BASE="https://raw.githubusercontent.com/red-hat-storage/external-snapshotter/${RHS_TAG}/client/config/crd"
+        for profile in dr1 dr2; do
+          kubectl --context "$profile" apply \
+            -f "${RHS_BASE}/groupsnapshot.storage.openshift.io_volumegroupsnapshotclasses.yaml" \
+            -f "${RHS_BASE}/groupsnapshot.storage.openshift.io_volumegroupsnapshotcontents.yaml" \
+            -f "${RHS_BASE}/groupsnapshot.storage.openshift.io_volumegroupsnapshots.yaml"
+        done
+
     - name: Deploy ramen
       run: |
         set -euo pipefail
