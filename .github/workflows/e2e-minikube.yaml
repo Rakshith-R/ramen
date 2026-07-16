@@ -93,10 +93,10 @@ jobs:
         set -euo pipefail
         # ceph-volume raw list crashes on devices without udev data.
         # sysfs is read-only inside containers so udevadm trigger won't work.
-        # Copy only the host's udev database files (not sockets/rules).
+        # Copy the host's udev database into each container via tar pipe.
         for profile in dr1 dr2; do
-          docker exec "$profile" mkdir -p /run/udev/data
-          docker cp /run/udev/data/. "$profile":/run/udev/data/
+          tar -C /run/udev -cf - data \
+            | docker exec -i "$profile" sh -c 'mkdir -p /run/udev && tar -C /run/udev -xf -'
           echo "Copied udev data to $profile: $(docker exec "$profile" ls /run/udev/data/ | wc -l) entries"
         done
 
