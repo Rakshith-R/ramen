@@ -72,9 +72,6 @@ jobs:
         curl -fSL -o /tmp/kubectl-gather "https://github.com/nirs/kubectl-gather/releases/download/v0.13.0/kubectl-gather-v0.13.0-linux-amd64"
         sudo install /tmp/kubectl-gather /usr/local/bin/kubectl-gather
 
-    - name: Build ramen-operator container
-      run: make docker-build
-
     - name: Create virtual environment
       run: hack/make-venv .venv
 
@@ -99,6 +96,9 @@ jobs:
           docker exec "$profile" bash -c "
             set -euo pipefail
             apt-get update -qq && apt-get install -y -qq lvm2 >/dev/null
+            # Remove host device nodes leaked from GHA runner — ceph-volume
+            # raw list crashes on them (no udev data inside container).
+            rm -f /dev/nvme*
             truncate -s 5G /data/ceph-osd.img
             LOOP=\$(losetup --find --show /data/ceph-osd.img)
             echo \"Loop device: \$LOOP\"
@@ -164,6 +164,9 @@ jobs:
       run: |
         source ../venv
         drenv start --max-workers ${{ env.MAX_WORKERS }} envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Build ramen-operator container
+      run: make docker-build
 
     - name: Deploy ramen
       run: |
