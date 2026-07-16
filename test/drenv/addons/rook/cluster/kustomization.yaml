@@ -33,3 +33,12 @@ patches:
       - op: replace
         path: /spec/cephVersion/image
         value: quay.io/ceph/ceph:v20.2.0
+      # Docker driver's extra-disks are loopback-backed; ceph-volume raw
+      # cannot list them. Use LVM on the loop device instead.
+      - op: replace
+        path: /spec/storage/useAllDevices
+        value: false
+      - op: add
+        path: /spec/storage/devices
+        value:
+          - name: "/dev/ceph-vg/ceph-lv"

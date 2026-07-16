@@ -91,6 +91,29 @@ jobs:
         source ../venv
         drenv start --skip-addons --skip-tests envs/minikube-dr-${{ matrix.profile }}.yaml
 
+    - name: Prepare Ceph OSD disks (LVM on extra-disk)
+      run: |
+        set -euo pipefail
+        for profile in dr1 dr2; do
+          echo "=== Setting up LVM on $profile ==="
+          minikube ssh -p "$profile" -- sudo bash -c '
+            lsblk
+            # Find the loop device created by --extra-disks
+            LOOP=$(lsblk -d -n -o NAME,TYPE | awk "/loop/{print \"/dev/\" \$1}" | head -1)
+            if [ -z "$LOOP" ]; then
+              echo "ERROR: No loop device found"
+              lsblk -a
+              exit 1
+            fi
+            echo "Using loop device: $LOOP"
+            pvcreate --yes "$LOOP"
+            vgcreate ceph-vg "$LOOP"
+            lvcreate -l 100%FREE -n ceph-lv ceph-vg
+            echo "Created /dev/ceph-vg/ceph-lv"
+            lsblk
+          '
+        done
+
     - name: Pre-load Ceph images into minikube
       run: |
         set -euo pipefail
