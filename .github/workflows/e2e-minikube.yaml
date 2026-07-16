@@ -88,6 +88,17 @@ jobs:
         source ../venv
         drenv start --skip-addons --skip-tests envs/minikube-dr-${{ matrix.profile }}.yaml
 
+    - name: Copy host udev data into minikube containers
+      run: |
+        set -euo pipefail
+        # ceph-volume raw list crashes on devices without udev data.
+        # sysfs is read-only inside containers so udevadm trigger won't work.
+        # Copy the host's udev database into each minikube container.
+        for profile in dr1 dr2; do
+          docker cp /run/udev "$profile":/run/
+          echo "Copied udev data to $profile: $(docker exec "$profile" ls /run/udev/data/ | wc -l) entries"
+        done
+
     - name: Prepare Ceph OSD disks
       run: |
         set -euo pipefail
@@ -95,14 +106,7 @@ jobs:
           echo "=== Setting up OSD disk on $profile ==="
           docker exec "$profile" bash -c "
             set -euo pipefail
-            apt-get update -qq && apt-get install -y -qq lvm2 udev >/dev/null
-            # Start udevd and populate udev database for host devices.
-            # ceph-volume raw list crashes without udev data for block devices
-            # leaked from the GHA runner into this container.
-            udevd --daemon 2>/dev/null || true
-            udevadm trigger --type=devices --action=add
-            udevadm settle --timeout=30
-            echo 'udev entries:' && ls /run/udev/data/ | head -5 || true
+            apt-get update -qq && apt-get install -y -qq lvm2 >/dev/null
             truncate -s 5G /data/ceph-osd.img
             LOOP=\$(losetup --find --show /data/ceph-osd.img)
             echo \"Loop device: \$LOOP\"
