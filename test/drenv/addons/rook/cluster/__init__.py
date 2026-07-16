@@ -126,6 +126,15 @@ def wait_for_csiaddons_nodes(cluster):
     with NotFound if the resource is deleted between the wait_for and
     kubectl.wait calls. We retry to handle this race.
     """
+    try:
+        kubectl.get(
+            "crd/csiaddonsnodes.csiaddons.openshift.io",
+            context=cluster,
+        )
+    except commands.Error:
+        print("CSIAddonsNode CRD not installed, skipping wait")
+        return
+
     deadline = time.monotonic() + CSIADDONS_TIMEOUT
 
     for suffix in CSIADDONS_NODES:
