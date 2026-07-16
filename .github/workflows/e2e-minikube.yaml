@@ -95,11 +95,14 @@ jobs:
           echo "=== Setting up OSD disk on $profile ==="
           docker exec "$profile" bash -c "
             set -euo pipefail
-            apt-get update -qq && apt-get install -y -qq lvm2 >/dev/null
-            # Populate udev database for host devices leaked from GHA runner.
-            # ceph-volume raw list crashes without udev data for block devices.
-            udevadm trigger --type=devices --action=change
-            udevadm settle --timeout=10 || true
+            apt-get update -qq && apt-get install -y -qq lvm2 udev >/dev/null
+            # Start udevd and populate udev database for host devices.
+            # ceph-volume raw list crashes without udev data for block devices
+            # leaked from the GHA runner into this container.
+            udevd --daemon 2>/dev/null || true
+            udevadm trigger --type=devices --action=add
+            udevadm settle --timeout=30
+            echo 'udev entries:' && ls /run/udev/data/ | head -5 || true
             truncate -s 5G /data/ceph-osd.img
             LOOP=\$(losetup --find --show /data/ceph-osd.img)
             echo \"Loop device: \$LOOP\"
