@@ -246,6 +246,9 @@ jobs:
         set -euo pipefail
         echo "=== Resources before deploy ==="
         free -h; df -h /
+        # controller-gen and kustomize are installed to ./bin by make targets
+        make controller-gen kustomize
+        export PATH="$PWD/bin:$PATH"
         source venv
         ramendev deploy test/envs/minikube-dr-${{ matrix.profile }}.yaml
 
