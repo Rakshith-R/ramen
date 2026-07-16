@@ -28,12 +28,12 @@ templates:
     disk_size: "10g"
     workers:
       - addons:
-          - name: ocm-hub
-          - name: ocm-controller
-      - addons:
           - name: rook-operator
           - name: rook-cluster
           - name: rook-cephfs
+      - addons:
+          - name: ocm-hub
+          - name: ocm-controller
       - addons:
           - name: ocm-cluster
             args: ["$name", "$name"]
