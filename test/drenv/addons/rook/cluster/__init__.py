@@ -141,37 +141,40 @@ def wait_for_csiaddons_nodes(cluster):
         name = f"{cluster}-rook-ceph-{suffix}"
         resource = f"csiaddonsnodes.csiaddons.openshift.io/{name}"
 
-        for attempt in range(1, CSIADDONS_ATTEMPTS + 1):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(f"Timeout waiting for {resource}")
+        try:
+            for attempt in range(1, CSIADDONS_ATTEMPTS + 1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"Timeout waiting for {resource}")
 
-            print(f"Waiting until '{resource}' exists")
-            kubectl.wait(
-                resource,
-                "--for=create",
-                "--namespace=rook-ceph",
-                timeout=remaining,
-                context=cluster,
-            )
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(f"Timeout waiting for {resource}")
-
-            print(f"Waiting until '{resource}' status.state is Connected")
-            try:
+                print(f"Waiting until '{resource}' exists")
                 kubectl.wait(
                     resource,
-                    "--for=jsonpath={.status.state}=Connected",
+                    "--for=create",
                     "--namespace=rook-ceph",
                     timeout=remaining,
                     context=cluster,
                 )
-                break
-            except commands.Error:
-                if attempt == CSIADDONS_ATTEMPTS:
-                    raise
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"Timeout waiting for {resource}")
+
+                print(f"Waiting until '{resource}' status.state is Connected")
+                try:
+                    kubectl.wait(
+                        resource,
+                        "--for=jsonpath={.status.state}=Connected",
+                        "--namespace=rook-ceph",
+                        timeout=remaining,
+                        context=cluster,
+                    )
+                    break
+                except commands.Error:
+                    if attempt == CSIADDONS_ATTEMPTS:
+                        raise
+        except (commands.Error, RuntimeError) as e:
+            print(f"Warning: CSIAddonsNode '{name}' not ready: {e}")
                 print(
                     f"Retrying wait for '{resource}' ({attempt}/{CSIADDONS_ATTEMPTS})"
                 )
