@@ -25,7 +25,6 @@ templates:
     container_runtime: containerd
     cpus: 2
     memory: "6g"
-    extra_disks: 1
     disk_size: "10g"
     workers:
       - addons:
@@ -48,7 +47,6 @@ templates:
     container_runtime: containerd
     cpus: 2
     memory: "6g"
-    extra_disks: 1
     disk_size: "10g"
     workers:
       - addons:
