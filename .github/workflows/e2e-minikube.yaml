@@ -179,7 +179,7 @@ jobs:
                 "containers": [{
                   "name": "ceph-debug",
                   "image": "quay.io/ceph/ceph:v20.2.0",
-                  "command": ["bash", "-c", "echo DEVICES:; lsblk -d; echo UDEV:; ls /run/udev/data/ 2>&1 | head -5; echo RAW_LIST:; ceph-volume raw list --format json 2>&1; echo EXIT:$?"],
+                  "command": ["bash", "-c", "echo DEVICES:; lsblk -d; echo UDEV:; ls /run/udev/data/ 2>&1 | wc -l; echo === direct ===; ceph-volume raw list --format json 2>&1; echo EXIT:$?; echo === via stdbuf ===; mkdir -p /tmp/ceph-log; stdbuf -oL ceph-volume --log-path /tmp/ceph-log raw list --format json 2>&1; echo EXIT:$?; echo === ceph-volume log ===; cat /tmp/ceph-log/ceph-volume.log 2>/dev/null | tail -30; echo === lvm list ===; ceph-volume lvm list --format json 2>&1; echo EXIT:$?"],
                   "securityContext": {"privileged": true},
                   "volumeMounts": [
                     {"name": "dev", "mountPath": "/dev"},
