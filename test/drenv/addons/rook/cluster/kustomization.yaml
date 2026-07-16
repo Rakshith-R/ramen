@@ -35,10 +35,22 @@ patches:
         value: quay.io/ceph/ceph:v20.2.0
       # Docker driver's extra-disks are loopback-backed; ceph-volume raw
       # cannot list them. Use LVM on the loop device instead.
+      # VG names include the profile to avoid conflicts (docker containers
+      # share the host kernel's device-mapper). Both nodes listed so the
+      # shared kustomization works for either profile — rook ignores
+      # non-existing nodes.
+      - op: replace
+        path: /spec/storage/useAllNodes
+        value: false
       - op: replace
         path: /spec/storage/useAllDevices
         value: false
       - op: add
-        path: /spec/storage/devices
+        path: /spec/storage/nodes
         value:
-          - name: "/dev/ceph-vg/ceph-lv"
+          - name: "dr1"
+            devices:
+              - name: "/dev/ceph-vg-dr1/ceph-lv"
+          - name: "dr2"
+            devices:
+              - name: "/dev/ceph-vg-dr2/ceph-lv"

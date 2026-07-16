@@ -96,18 +96,18 @@ jobs:
         set -euo pipefail
         for profile in dr1 dr2; do
           echo "=== Setting up OSD disk on $profile ==="
-          docker exec "$profile" bash -c '
+          docker exec "$profile" bash -c "
             set -euo pipefail
             apt-get update -qq && apt-get install -y -qq lvm2 >/dev/null
             truncate -s 5G /data/ceph-osd.img
-            LOOP=$(losetup --find --show /data/ceph-osd.img)
-            echo "Loop device: $LOOP"
-            pvcreate --yes "$LOOP"
-            vgcreate ceph-vg "$LOOP"
-            lvcreate -l 100%FREE -n ceph-lv ceph-vg --yes --zero n
-            echo "Created /dev/ceph-vg/ceph-lv"
+            LOOP=\$(losetup --find --show /data/ceph-osd.img)
+            echo \"Loop device: \$LOOP\"
+            pvcreate --yes \"\$LOOP\"
+            vgcreate ceph-vg-${profile} \"\$LOOP\"
+            lvcreate -l 100%FREE -n ceph-lv ceph-vg-${profile} --yes --zero n
+            echo \"Created /dev/ceph-vg-${profile}/ceph-lv\"
             lsblk
-          '
+          "
         done
 
     - name: Pre-load Ceph images into minikube
