@@ -26,6 +26,10 @@ patches:
       - op: replace
         path: /data/ROOK_USE_CSI_OPERATOR
         value: 'false'
+      # Minikube docker driver creates loopback-backed virtual disks.
+      - op: replace
+        path: /data/ROOK_CEPH_ALLOW_LOOP_DEVICES
+        value: 'true'
   # Disable to avoid random failures when restaring the enviroment.
   #   failed to call webhook:
   #   Post "https://rook-ceph-admission-controller.rook-ceph.svc:443/
