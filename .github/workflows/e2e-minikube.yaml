@@ -36,7 +36,7 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -45,16 +45,19 @@ jobs:
     steps:
     - name: Free disk space
       run: |
+        set -euo pipefail
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
           /opt/ghc /usr/share/swift
         sudo docker image prune -af
         df -h /
+        free -h
 
     - name: Checkout
       uses: actions/checkout@v6
 
     - name: Install CLI tools
       run: |
+        set -euo pipefail
         # clusteradm (OCM)
         curl -fSL "https://github.com/open-cluster-management-io/clusteradm/releases/download/v0.11.2/clusteradm_linux_amd64.tar.gz" \
           | sudo tar xz -C /usr/local/bin clusteradm
@@ -90,21 +93,51 @@ jobs:
 
     - name: Pre-load Ceph images into minikube
       run: |
+        set -euo pipefail
         IMAGES=(
           quay.io/ceph/ceph:v20.2.0
           docker.io/rook/ceph:v1.19.7
           quay.io/cephcsi/cephcsi:v3.16.2
         )
+        ts() { date +%H:%M:%S; }
+
+        echo "[$(ts)] Pulling images to host docker..."
+        pids=()
         for img in "${IMAGES[@]}"; do
           docker pull "$img" &
+          pids+=($!)
         done
-        wait
-        for profile in dr1 dr2; do
+        for pid in "${pids[@]}"; do wait "$pid"; done
+        echo "[$(ts)] Host pulls complete"
+
+        # Load sequentially within each profile to avoid OOM.
+        # Parallel across profiles is safe (separate containerd instances).
+        load_profile() {
+          local profile=$1
           for img in "${IMAGES[@]}"; do
-            minikube image load "$img" --profile "$profile" &
+            echo "[$(ts)] Loading $img → $profile"
+            local start=$SECONDS
+            minikube image load "$img" --profile "$profile"
+            echo "[$(ts)] $img → $profile done ($((SECONDS - start))s)"
           done
+        }
+        load_profile dr1 &
+        pid1=$!
+        load_profile dr2 &
+        pid2=$!
+        wait "$pid1"
+        wait "$pid2"
+        echo "[$(ts)] All images loaded"
+
+    - name: Verify images loaded
+      run: |
+        set -euo pipefail
+        for profile in dr1 dr2; do
+          echo "=== Images in $profile ==="
+          minikube image ls --profile "$profile" 2>/dev/null | grep -E 'ceph|rook' || true
         done
-        wait
+        echo "=== Host resources ==="
+        free -h; df -h /
 
     - name: Start addons
       uses: nick-fields/retry@v4
@@ -118,6 +151,9 @@ jobs:
 
     - name: Deploy ramen
       run: |
+        set -euo pipefail
+        echo "=== Resources before deploy ==="
+        free -h; df -h /
         source venv
         ramendev deploy test/envs/minikube-dr-${{ matrix.profile }}.yaml
 
