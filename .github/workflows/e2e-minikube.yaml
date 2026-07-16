@@ -104,7 +104,7 @@ jobs:
             echo "Loop device: $LOOP"
             pvcreate --yes "$LOOP"
             vgcreate ceph-vg "$LOOP"
-            lvcreate -l 100%FREE -n ceph-lv ceph-vg --yes
+            lvcreate -l 100%FREE -n ceph-lv ceph-vg --yes --zero n
             echo "Created /dev/ceph-vg/ceph-lv"
             lsblk
           '
