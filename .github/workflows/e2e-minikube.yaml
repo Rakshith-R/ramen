@@ -88,18 +88,6 @@ jobs:
         source ../venv
         drenv start --skip-addons --skip-tests envs/minikube-dr-${{ matrix.profile }}.yaml
 
-    - name: Copy host udev data into minikube containers
-      run: |
-        set -euo pipefail
-        # ceph-volume raw list crashes on devices without udev data.
-        # sysfs is read-only inside containers so udevadm trigger won't work.
-        # Copy the host's udev database into each container via tar pipe.
-        for profile in dr1 dr2; do
-          tar -C /run/udev -cf - data \
-            | docker exec -i "$profile" sh -c 'mkdir -p /run/udev && tar -C /run/udev -xf -'
-          echo "Copied udev data to $profile: $(docker exec "$profile" ls /run/udev/data/ | wc -l) entries"
-        done
-
     - name: Prepare Ceph OSD disks
       run: |
         set -euo pipefail
@@ -117,6 +105,57 @@ jobs:
             echo \"Created /dev/ceph-vg-${profile}/ceph-lv\"
             lsblk
           "
+        done
+
+    - name: Copy host udev data into minikube containers
+      run: |
+        set -euo pipefail
+        # Must run AFTER LVM creation so dm device udev entries are included.
+        # Host udevd creates entries for dm devices (shared kernel); settle
+        # ensures they're flushed before we copy.
+        udevadm settle
+        for profile in dr1 dr2; do
+          tar -C /run/udev -cf - data \
+            | docker exec -i "$profile" sh -c 'mkdir -p /run/udev && tar -C /run/udev -xf -'
+          echo "Copied udev data to $profile: $(docker exec "$profile" ls /run/udev/data/ | wc -l) entries"
+        done
+
+    - name: Create local storage for Ceph OSDs
+      run: |
+        set -euo pipefail
+        for profile in dr1 dr2; do
+          kubectl --context "$profile" apply -f - <<EOF
+        apiVersion: storage.k8s.io/v1
+        kind: StorageClass
+        metadata:
+          name: ceph-block-local
+        provisioner: kubernetes.io/no-provisioner
+        volumeBindingMode: WaitForFirstConsumer
+        ---
+        apiVersion: v1
+        kind: PersistentVolume
+        metadata:
+          name: ceph-osd-pv
+        spec:
+          capacity:
+            storage: 5Gi
+          volumeMode: Block
+          accessModes:
+            - ReadWriteOnce
+          persistentVolumeReclaimPolicy: Retain
+          storageClassName: ceph-block-local
+          local:
+            path: /dev/ceph-vg-${profile}/ceph-lv
+          nodeAffinity:
+            required:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                        - ${profile}
+        EOF
+          echo "Created StorageClass and PV for $profile"
         done
 
     - name: Pre-load Ceph images into minikube
@@ -166,35 +205,6 @@ jobs:
         done
         echo "=== Host resources ==="
         free -h; df -h /
-
-    - name: Debug ceph-volume raw list (K8s pod context)
-      run: |
-        set -euo pipefail
-        for profile in dr1 dr2; do
-          echo "=== Testing ceph-volume in $profile (K8s pod) ==="
-          kubectl --context "$profile" run ceph-debug --rm -i --restart=Never \
-            --image=quay.io/ceph/ceph:v20.2.0 \
-            --overrides='{
-              "spec": {
-                "containers": [{
-                  "name": "ceph-debug",
-                  "image": "quay.io/ceph/ceph:v20.2.0",
-                  "command": ["bash", "-c", "echo DEVICES:; lsblk -d; echo UDEV:; ls /run/udev/data/ 2>&1 | wc -l; echo === direct ===; ceph-volume raw list --format json 2>&1; echo EXIT:$?; echo === via stdbuf ===; mkdir -p /tmp/ceph-log; stdbuf -oL ceph-volume --log-path /tmp/ceph-log raw list --format json 2>&1; echo EXIT:$?; echo === ceph-volume log ===; cat /tmp/ceph-log/ceph-volume.log 2>/dev/null | tail -30; echo === lvm list ===; ceph-volume lvm list --format json 2>&1; echo EXIT:$?"],
-                  "securityContext": {"privileged": true},
-                  "volumeMounts": [
-                    {"name": "dev", "mountPath": "/dev"},
-                    {"name": "udev", "mountPath": "/run/udev"},
-                    {"name": "sys", "mountPath": "/sys"}
-                  ]
-                }],
-                "volumes": [
-                  {"name": "dev", "hostPath": {"path": "/dev"}},
-                  {"name": "udev", "hostPath": {"path": "/run/udev"}},
-                  {"name": "sys", "hostPath": {"path": "/sys"}}
-                ]
-              }
-            }' 2>&1 || echo "Pod failed with: $?"
-        done
 
     - name: Start addons
       timeout-minutes: 45

@@ -33,12 +33,11 @@ patches:
       - op: replace
         path: /spec/cephVersion/image
         value: quay.io/ceph/ceph:v20.2.0
-      # Docker driver's extra-disks are loopback-backed; ceph-volume raw
-      # cannot list them. Use LVM on the loop device instead.
-      # VG names include the profile to avoid conflicts (docker containers
-      # share the host kernel's device-mapper). Both nodes listed so the
-      # shared kustomization works for either profile — rook ignores
-      # non-existing nodes.
+      # Use PVC-backed OSDs to avoid full device scan.
+      # Node-level storage triggers ceph-volume raw list on ALL devices
+      # (hardcoded block="" in volume.go:212), which crashes on host
+      # NVMe/virtual devices visible through shared kernel sysfs.
+      # PVC-backed scopes the scan to one device (block="/mnt/<node>").
       - op: replace
         path: /spec/storage/useAllNodes
         value: false
@@ -46,14 +45,20 @@ patches:
         path: /spec/storage/useAllDevices
         value: false
       - op: add
-        path: /spec/storage/deviceFilter
-        value: "^dm-"
-      - op: add
-        path: /spec/storage/nodes
+        path: /spec/storage/storageClassDeviceSets
         value:
-          - name: "dr1"
-            devices:
-              - name: "/dev/ceph-vg-dr1/ceph-lv"
-          - name: "dr2"
-            devices:
-              - name: "/dev/ceph-vg-dr2/ceph-lv"
+          - name: ceph-osd
+            count: 1
+            portable: false
+            tuneDeviceClass: false
+            volumeClaimTemplates:
+              - metadata:
+                  name: data
+                spec:
+                  resources:
+                    requests:
+                      storage: 5Gi
+                  storageClassName: ceph-block-local
+                  volumeMode: Block
+                  accessModes:
+                    - ReadWriteOnce
