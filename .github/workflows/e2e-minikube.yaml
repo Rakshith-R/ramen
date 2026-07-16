@@ -101,14 +101,17 @@ jobs:
             pvcreate --yes \"\$LOOP\" >/dev/null
             vgcreate ceph-vg-${profile} \"\$LOOP\" >/dev/null
             lvcreate -l 100%FREE -n ceph-lv ceph-vg-${profile} --yes --zero n >/dev/null
-            # udev inside kicbase doesn't create LVM symlinks.
-            # Create /dev/mapper/ and /dev/<VG>/ entries manually.
+            # udev inside kicbase doesn't create device nodes or symlinks.
+            # Create /dev/dm-N, /dev/mapper/, /dev/<VG>/ manually.
             DMDEV=\$(dmsetup info --noheadings -c -o blkdevname ceph--vg--${profile}-ceph--lv)
+            MAJOR=\$(dmsetup info --noheadings -c -o major ceph--vg--${profile}-ceph--lv)
+            MINOR=\$(dmsetup info --noheadings -c -o minor ceph--vg--${profile}-ceph--lv)
+            mknod /dev/\$DMDEV b \$MAJOR \$MINOR 2>/dev/null || true
             mkdir -p /dev/mapper /dev/ceph-vg-${profile}
             ln -sf /dev/\$DMDEV /dev/mapper/ceph--vg--${profile}-ceph--lv
             ln -sf /dev/\$DMDEV /dev/ceph-vg-${profile}/ceph-lv
-            echo \"Device: /dev/\$DMDEV\"
-            ls -la /dev/ceph-vg-${profile}/ceph-lv /dev/mapper/ceph--vg--${profile}-ceph--lv
+            echo \"Device: /dev/\$DMDEV (\$MAJOR:\$MINOR)\"
+            ls -la /dev/\$DMDEV /dev/ceph-vg-${profile}/ceph-lv
             lsblk /dev/\$DMDEV
           "
           kubectl --context "$profile" apply -f - <<EOF
