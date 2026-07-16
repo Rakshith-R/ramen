@@ -25,8 +25,8 @@ permissions:
 env:
   MAX_WORKERS: 2
   BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-  DRENV_COMMAND_TIMEOUT: "1200"
-  ROOK_CLUSTER_TIMEOUT: "1200"
+  DRENV_COMMAND_TIMEOUT: "1800"
+  ROOK_CLUSTER_TIMEOUT: "1800"
   DRENV_LOG_LEVEL: DEBUG
 
 concurrency:
@@ -36,7 +36,7 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -140,14 +140,11 @@ jobs:
         free -h; df -h /
 
     - name: Start addons
-      uses: nick-fields/retry@v4
-      with:
-        timeout_minutes: 30
-        max_attempts: 2
-        command: |
-          cd test
-          source ../venv
-          drenv start --max-workers ${{ env.MAX_WORKERS }} envs/minikube-dr-${{ matrix.profile }}.yaml
+      timeout-minutes: 45
+      working-directory: test
+      run: |
+        source ../venv
+        drenv start --max-workers ${{ env.MAX_WORKERS }} envs/minikube-dr-${{ matrix.profile }}.yaml
 
     - name: Deploy ramen
       run: |
