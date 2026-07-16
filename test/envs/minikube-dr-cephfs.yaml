@@ -31,6 +31,7 @@ templates:
           - name: rook-operator
           - name: rook-cluster
           - name: rook-cephfs
+          - name: rook-toolbox
       - addons:
           - name: ocm-hub
           - name: ocm-controller
@@ -53,6 +54,7 @@ templates:
           - name: rook-operator
           - name: rook-cluster
           - name: rook-cephfs
+          - name: rook-toolbox
       - addons:
           - name: ocm-cluster
             args: ["$name", "dr1"]

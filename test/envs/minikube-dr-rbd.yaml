@@ -31,6 +31,7 @@ templates:
           - name: rook-operator
           - name: rook-cluster
           - name: rook-pool
+          - name: rook-toolbox
       - addons:
           - name: ocm-hub
           - name: ocm-controller
@@ -54,6 +55,7 @@ templates:
           - name: rook-operator
           - name: rook-cluster
           - name: rook-pool
+          - name: rook-toolbox
       - addons:
           - name: csi-addons
           - name: ocm-cluster
