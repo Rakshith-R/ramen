@@ -88,42 +88,22 @@ jobs:
         source ../venv
         drenv start --skip-addons --skip-tests envs/minikube-dr-${{ matrix.profile }}.yaml
 
-    - name: Prepare Ceph OSD disks
+    - name: Prepare Ceph OSD disks and local PVs
       run: |
         set -euo pipefail
         for profile in dr1 dr2; do
           echo "=== Setting up OSD disk on $profile ==="
-          docker exec "$profile" bash -c "
+          DM_PATH=$(docker exec "$profile" bash -c "
             set -euo pipefail
             apt-get update -qq && apt-get install -y -qq lvm2 >/dev/null
             truncate -s 5G /data/ceph-osd.img
             LOOP=\$(losetup --find --show /data/ceph-osd.img)
-            echo \"Loop device: \$LOOP\"
-            pvcreate --yes \"\$LOOP\"
-            vgcreate ceph-vg-${profile} \"\$LOOP\"
-            lvcreate -l 100%FREE -n ceph-lv ceph-vg-${profile} --yes --zero n
-            echo \"Created /dev/ceph-vg-${profile}/ceph-lv\"
-            lsblk
-          "
-        done
-
-    - name: Copy host udev data into minikube containers
-      run: |
-        set -euo pipefail
-        # Must run AFTER LVM creation so dm device udev entries are included.
-        # Host udevd creates entries for dm devices (shared kernel); settle
-        # ensures they're flushed before we copy.
-        udevadm settle
-        for profile in dr1 dr2; do
-          tar -C /run/udev -cf - data \
-            | docker exec -i "$profile" sh -c 'mkdir -p /run/udev && tar -C /run/udev -xf -'
-          echo "Copied udev data to $profile: $(docker exec "$profile" ls /run/udev/data/ | wc -l) entries"
-        done
-
-    - name: Create local storage for Ceph OSDs
-      run: |
-        set -euo pipefail
-        for profile in dr1 dr2; do
+            pvcreate --yes \"\$LOOP\" >/dev/null
+            vgcreate ceph-vg-${profile} \"\$LOOP\" >/dev/null
+            lvcreate -l 100%FREE -n ceph-lv ceph-vg-${profile} --yes --zero n >/dev/null
+            lvs --noheadings -o lv_dm_path ceph-vg-${profile}/ceph-lv | tr -d ' '
+          ")
+          echo "DM device for $profile: $DM_PATH"
           kubectl --context "$profile" apply -f - <<EOF
         apiVersion: storage.k8s.io/v1
         kind: StorageClass
@@ -145,7 +125,7 @@ jobs:
           persistentVolumeReclaimPolicy: Retain
           storageClassName: ceph-block-local
           local:
-            path: /dev/ceph-vg-${profile}/ceph-lv
+            path: ${DM_PATH}
           nodeAffinity:
             required:
               nodeSelectorTerms:
@@ -155,7 +135,17 @@ jobs:
                       values:
                         - ${profile}
         EOF
-          echo "Created StorageClass and PV for $profile"
+          echo "Created OSD disk + local PV for $profile ($DM_PATH)"
+        done
+
+    - name: Copy host udev data into minikube containers
+      run: |
+        set -euo pipefail
+        udevadm settle
+        for profile in dr1 dr2; do
+          tar -C /run/udev -cf - data \
+            | docker exec -i "$profile" sh -c 'mkdir -p /run/udev && tar -C /run/udev -xf -'
+          echo "Copied udev data to $profile: $(docker exec "$profile" ls /run/udev/data/ | wc -l) entries"
         done
 
     - name: Pre-load Ceph images into minikube
