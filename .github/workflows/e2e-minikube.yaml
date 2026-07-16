@@ -101,7 +101,7 @@ jobs:
             pvcreate --yes \"\$LOOP\" >/dev/null
             vgcreate ceph-vg-${profile} \"\$LOOP\" >/dev/null
             lvcreate -l 100%FREE -n ceph-lv ceph-vg-${profile} --yes --zero n >/dev/null
-            lvs --noheadings -o lv_dm_path ceph-vg-${profile}/ceph-lv | tr -d ' '
+            echo /dev/\$(dmsetup info --noheadings -c -o blkdevname ceph--vg--${profile}-ceph--lv)
           ")
           echo "DM device for $profile: $DM_PATH"
           kubectl --context "$profile" apply -f - <<EOF
