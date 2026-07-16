@@ -279,6 +279,18 @@ jobs:
           kubectl --context "$profile" -n rook-ceph logs deploy/rook-ceph-operator --tail=30 2>/dev/null || true
           echo "--- All rook-ceph pods ---"
           kubectl --context "$profile" -n rook-ceph get pods -o wide 2>/dev/null || true
+          echo "--- Ramen operator pods ---"
+          kubectl --context "$profile" -n ramen-system get pods -o wide 2>/dev/null || true
+          echo "--- Ramen hub operator logs (last 50) ---"
+          kubectl --context "$profile" -n ramen-system logs deploy/ramen-hub-operator --tail=50 2>/dev/null || true
+          echo "--- Ramen dr-cluster operator logs (last 30) ---"
+          kubectl --context "$profile" -n ramen-system logs deploy/ramen-dr-cluster-operator --tail=30 2>/dev/null || true
+          echo "--- OCM policies ---"
+          kubectl --context "$profile" get policies.policy.open-cluster-management.io -A 2>/dev/null || true
+          echo "--- DRClusters ---"
+          kubectl --context "$profile" get drclusters 2>/dev/null || true
+          echo "--- DRPolicies ---"
+          kubectl --context "$profile" get drpolicies 2>/dev/null || true
         done
 
     - name: Gather environment data

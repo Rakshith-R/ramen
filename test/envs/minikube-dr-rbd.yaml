@@ -30,6 +30,7 @@ templates:
       - addons:
           - name: rook-operator
           - name: rook-cluster
+          - name: external-snapshotter
           - name: rook-pool
           - name: rook-toolbox
       - addons:
@@ -40,7 +41,6 @@ templates:
           - name: ocm-cluster
             args: ["$name", "$name"]
       - addons:
-          - name: external-snapshotter
           - name: minio
           - name: velero
           - name: recipe
@@ -54,6 +54,7 @@ templates:
       - addons:
           - name: rook-operator
           - name: rook-cluster
+          - name: external-snapshotter
           - name: rook-pool
           - name: rook-toolbox
       - addons:
@@ -61,7 +62,6 @@ templates:
           - name: ocm-cluster
             args: ["$name", "dr1"]
       - addons:
-          - name: external-snapshotter
           - name: minio
           - name: velero
           - name: recipe
