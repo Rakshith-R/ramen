@@ -111,7 +111,7 @@ def wait_for_secret_propagation(hub, clusters, args):
             f"policy/{policy}",
             "--for=create",
             f"--namespace={cluster}",
-            timeout=60,
+            timeout=180,
             context=hub,
             log=command.debug,
         )
@@ -120,7 +120,7 @@ def wait_for_secret_propagation(hub, clusters, args):
             f"policy/{policy}",
             "--for=jsonpath={.status.compliant}=Compliant",
             f"--namespace={cluster}",
-            timeout=60,
+            timeout=180,
             context=hub,
             log=command.debug,
         )

@@ -227,7 +227,7 @@ jobs:
     - name: Configure ramen
       uses: nick-fields/retry@v4
       with:
-        timeout_seconds: 120
+        timeout_seconds: 300
         max_attempts: 3
         command: |
           source venv
