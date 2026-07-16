@@ -220,15 +220,21 @@ jobs:
       run: |
         set -euo pipefail
         # Ramen imports github.com/red-hat-storage/external-snapshotter which
-        # registers groupsnapshot.storage.openshift.io CRDs. The operator
-        # crashes without them. Install CRDs from the red-hat-storage fork.
-        RHS_TAG="release-v8.2"
+        # registers groupsnapshot.storage.openshift.io types. The CRD YAMLs
+        # in the repo use k8s.io group — sed-replace to openshift.io.
+        RHS_TAG="v8.2.1"
         RHS_BASE="https://raw.githubusercontent.com/red-hat-storage/external-snapshotter/${RHS_TAG}/client/config/crd"
+        CRDS=(
+          groupsnapshot.storage.k8s.io_volumegroupsnapshotclasses.yaml
+          groupsnapshot.storage.k8s.io_volumegroupsnapshotcontents.yaml
+          groupsnapshot.storage.k8s.io_volumegroupsnapshots.yaml
+        )
         for profile in dr1 dr2; do
-          kubectl --context "$profile" apply \
-            -f "${RHS_BASE}/groupsnapshot.storage.openshift.io_volumegroupsnapshotclasses.yaml" \
-            -f "${RHS_BASE}/groupsnapshot.storage.openshift.io_volumegroupsnapshotcontents.yaml" \
-            -f "${RHS_BASE}/groupsnapshot.storage.openshift.io_volumegroupsnapshots.yaml"
+          for crd in "${CRDS[@]}"; do
+            curl -fsSL "${RHS_BASE}/${crd}" \
+              | sed 's/groupsnapshot\.storage\.k8s\.io/groupsnapshot.storage.openshift.io/g' \
+              | kubectl --context "$profile" apply -f -
+          done
         done
 
     - name: Deploy ramen
