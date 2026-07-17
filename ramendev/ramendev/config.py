@@ -30,9 +30,10 @@ def run(args):
         create_ramen_s3_secrets(env["hub"], s3_secrets)
 
         if not auto_deploy:
+            dr_cluster_cm = generate_config_map("dr-cluster", env, args)
             for cluster in env["clusters"]:
-                if cluster != env["hub"]:
-                    create_ramen_s3_secrets(cluster, s3_secrets)
+                create_ramen_s3_secrets(cluster, s3_secrets)
+                create_ramen_config_map(cluster, dr_cluster_cm)
 
         create_ramen_config_map(env["hub"], hub_cm)
         create_hub_dr_resources(env["hub"], env["clusters"], env["topology"])
