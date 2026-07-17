@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Lightweight RBD DR environment for standard GitHub Actions runners
+# (4 CPUs, 16GB RAM). Uses docker driver, hub-on-spoke (dr1 = hub).
+#
+# Tests: rbd-mirror failover/relocate, VRG VolRep, snapshots, S3 metadata,
+# KubeObjectProtection.
+#
+# Inactive: CephFS, VolSync, submariner (docker bridge provides L2
+# connectivity between minikube containers).
+---
+name: "minikube-dr-rbd"
+
+ramen:
+  hub: dr1
+  clusters: [dr1, dr2]
+  topology: regional-dr
+  features:
+    volsync: false
+    auto_deploy: false
+
+templates:
+  - name: "hub-spoke"
+    driver: "$container"
+    container_runtime: containerd
+    cpus: 2
+    memory: "6g"
+    disk_size: "10g"
+    workers:
+      - addons:
+          - name: rook-operator
+          - name: rook-cluster
+          - name: external-snapshotter
+          - name: rook-pool
+          - name: rook-toolbox
+      - addons:
+          - name: ocm-hub
+          - name: ocm-controller
+      - addons:
+          - name: csi-addons
+          - name: ocm-cluster
+            args: ["$name", "$name"]
+      - addons:
+          - name: minio
+          - name: velero
+          - name: recipe
+  - name: "dr-cluster"
+    driver: "$container"
+    container_runtime: containerd
+    cpus: 2
+    memory: "6g"
+    disk_size: "10g"
+    workers:
+      - addons:
+          - name: rook-operator
+          - name: rook-cluster
+          - name: external-snapshotter
+          - name: rook-pool
+          - name: rook-toolbox
+      - addons:
+          - name: csi-addons
+          - name: ocm-cluster
+            args: ["$name", "dr1"]
+      - addons:
+          - name: minio
+          - name: velero
+          - name: recipe
+
+profiles:
+  - name: "dr1"
+    template: "hub-spoke"
+  - name: "dr2"
+    template: "dr-cluster"
+
+workers:
+  - addons:
+      - name: rbd-mirror
+        args: ["dr1", "dr2"]

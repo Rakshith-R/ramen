@@ -1,0 +1,25 @@
+# E2E config for minikube-dr-rbd environment.
+# RBD-only — no CephFS storage class available.
+---
+repo:
+  url: "https://github.com/RamenDR/ocm-ramen-samples.git"
+  branch: main
+
+drPolicy: dr-policy-1m
+
+clusterSet: default
+
+pvcspecs:
+  - name: rbd
+    storageclassname: rook-ceph-block
+    accessmodes: ReadWriteOnce
+
+deployers:
+  - name: disapp
+    type: disapp
+    description: "Discovered Application without recipe"
+
+tests:
+  - deployer: disapp
+    workload: deploy
+    pvcspec: rbd

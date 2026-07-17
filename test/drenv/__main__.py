@@ -281,7 +281,7 @@ def configure_logging(args):
 
     console = logging.StreamHandler(sys.stderr)
     console.setFormatter(formatter)
-    console.setLevel(logging.INFO)
+    console.setLevel(os.environ.get("DRENV_LOG_LEVEL", "INFO"))
 
     logging.basicConfig(
         level=logging.DEBUG,

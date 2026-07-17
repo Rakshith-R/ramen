@@ -24,14 +24,22 @@ def run(args):
     s3_secrets = generate_ramen_s3_secrets(env["clusters"], args)
 
     if env["hub"]:
+        auto_deploy = env["features"].get("auto_deploy", True)
         hub_cm = generate_config_map("hub", env, args)
 
         create_ramen_s3_secrets(env["hub"], s3_secrets)
 
+        if not auto_deploy:
+            dr_cluster_cm = generate_config_map("dr-cluster", env, args)
+            for cluster in env["clusters"]:
+                create_ramen_s3_secrets(cluster, s3_secrets)
+                create_ramen_config_map(cluster, dr_cluster_cm)
+
         create_ramen_config_map(env["hub"], hub_cm)
         create_hub_dr_resources(env["hub"], env["clusters"], env["topology"])
 
-        wait_for_secret_propagation(env["hub"], env["clusters"], args)
+        if auto_deploy:
+            wait_for_secret_propagation(env["hub"], env["clusters"], args)
         wait_for_dr_clusters(env["hub"], env["clusters"], args)
         wait_for_dr_policy(env["hub"], args)
 
@@ -66,7 +74,7 @@ def generate_config_map(controller, env, args):
     template = drenv.template(command.resource("configmap.yaml"))
     return template.substitute(
         name=f"ramen-{controller}-operator-config",
-        auto_deploy="true",
+        auto_deploy="true" if env["features"].get("auto_deploy", True) else "false",
         cluster1=clusters[0],
         cluster2=clusters[1],
         minio_url_cluster1=minio.service_url(clusters[0]),
@@ -111,7 +119,7 @@ def wait_for_secret_propagation(hub, clusters, args):
             f"policy/{policy}",
             "--for=create",
             f"--namespace={cluster}",
-            timeout=60,
+            timeout=180,
             context=hub,
             log=command.debug,
         )
@@ -120,7 +128,7 @@ def wait_for_secret_propagation(hub, clusters, args):
             f"policy/{policy}",
             "--for=jsonpath={.status.compliant}=Compliant",
             f"--namespace={cluster}",
-            timeout=60,
+            timeout=180,
             context=hub,
             log=command.debug,
         )

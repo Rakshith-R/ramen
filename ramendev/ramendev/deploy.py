@@ -69,7 +69,14 @@ def deploy(args, cluster, deploy_type, distro="", timeout=120):
     command.info("Deploying ramen operator in cluster '%s'", cluster)
     overlay = os.path.join(args.source_dir, f"config/{deploy_type}/default", distro)
     yaml = kubectl.kustomize(overlay, load_restrictor="LoadRestrictionsNone")
-    kubectl.apply("--filename=-", input=yaml, context=cluster, log=command.debug)
+    kubectl.apply(
+        "--filename=-",
+        "--server-side",
+        "--force-conflicts",
+        input=yaml,
+        context=cluster,
+        log=command.debug,
+    )
 
     deploy = f"ramen-{deploy_type}-operator"
     command.info("Waiting until '%s' is rolled out in cluster '%s'", deploy, cluster)

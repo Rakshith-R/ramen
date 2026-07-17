@@ -1,0 +1,429 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+
+# yamllint disable rule:line-length
+---
+name: e2e-minikube
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "DR profile to test"
+        required: true
+        default: "rbd"
+        type: choice
+        options:
+          - rbd
+          - cephfs
+
+permissions:
+  contents: read
+
+env:
+  MAX_WORKERS: 2
+  BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  DRENV_COMMAND_TIMEOUT: "1800"
+  ROOK_CLUSTER_TIMEOUT: "1800"
+  DRENV_LOG_LEVEL: DEBUG
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.profile)) || fromJSON('["rbd", "cephfs"]') }}
+
+    steps:
+    - name: Free disk space
+      run: |
+        set -euo pipefail
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+          /opt/ghc /usr/share/swift /opt/hostedtoolcache \
+          /usr/local/share/powershell /usr/local/share/chromium \
+          /usr/local/share/edge
+        sudo docker image prune -af
+        df -h /
+        free -h
+
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+
+    - name: Install CLI tools
+      run: |
+        set -euo pipefail
+        # clusteradm (OCM)
+        curl -fSL "https://github.com/open-cluster-management-io/clusteradm/releases/download/v0.11.2/clusteradm_linux_amd64.tar.gz" \
+          | sudo tar xz -C /usr/local/bin clusteradm
+        # velero
+        curl -fSL "https://github.com/vmware-tanzu/velero/releases/download/v1.16.1/velero-v1.16.1-linux-amd64.tar.gz" \
+          | sudo tar xz -C /usr/local/bin --strip-components=1 velero-v1.16.1-linux-amd64/velero
+        # mc (MinIO client)
+        curl -fSL -o /tmp/mc "https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2025-08-13T08-35-41Z"
+        sudo install /tmp/mc /usr/local/bin/mc
+        mc --version
+        # kubectl-gather
+        curl -fSL -o /tmp/kubectl-gather "https://github.com/nirs/kubectl-gather/releases/download/v0.13.0/kubectl-gather-v0.13.0-linux-amd64"
+        sudo install /tmp/kubectl-gather /usr/local/bin/kubectl-gather
+
+    - name: Create virtual environment
+      run: hack/make-venv .venv
+
+    - name: Setup drenv
+      working-directory: test
+      run: |
+        echo test/drenv.log >> "$GITHUB_WORKSPACE/artifacts.txt"
+        source ../venv
+        drenv setup envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Load kernel modules for Ceph RBD
+      run: |
+        sudo modprobe rbd || echo "WARNING: rbd module not available"
+        sudo modprobe nbd || echo "WARNING: nbd module not available"
+        lsmod | grep -E 'rbd|nbd' || true
+
+    - name: Start minikube clusters
+      working-directory: test
+      run: |
+        source ../venv
+        drenv start --skip-addons --skip-tests envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Prepare Ceph OSD disks and local PVs
+      run: |
+        set -euo pipefail
+        for profile in dr1 dr2; do
+          echo "=== Setting up OSD disk on $profile ==="
+          docker exec "$profile" bash -c "
+            set -euo pipefail
+            apt-get update -qq && apt-get install -y -qq lvm2 >/dev/null
+            truncate -s 5G /data/ceph-osd.img
+            LOOP=\$(losetup --find --show /data/ceph-osd.img)
+            pvcreate --yes \"\$LOOP\" >/dev/null
+            vgcreate ceph-vg-${profile} \"\$LOOP\" >/dev/null
+            lvcreate -l 100%FREE -n ceph-lv ceph-vg-${profile} --yes --zero n >/dev/null
+            # udev inside kicbase doesn't create device nodes or symlinks.
+            # Create /dev/dm-N, /dev/mapper/, /dev/<VG>/ manually.
+            DMDEV=\$(dmsetup info --noheadings -c -o blkdevname ceph--vg--${profile}-ceph--lv)
+            MAJOR=\$(dmsetup info --noheadings -c -o major ceph--vg--${profile}-ceph--lv)
+            MINOR=\$(dmsetup info --noheadings -c -o minor ceph--vg--${profile}-ceph--lv)
+            mknod /dev/\$DMDEV b \$MAJOR \$MINOR 2>/dev/null || true
+            mkdir -p /dev/mapper /dev/ceph-vg-${profile}
+            ln -sf /dev/\$DMDEV /dev/mapper/ceph--vg--${profile}-ceph--lv
+            ln -sf /dev/\$DMDEV /dev/ceph-vg-${profile}/ceph-lv
+            echo \"Device: /dev/\$DMDEV (\$MAJOR:\$MINOR)\"
+            ls -la /dev/\$DMDEV /dev/ceph-vg-${profile}/ceph-lv
+            lsblk /dev/\$DMDEV
+          "
+          kubectl --context "$profile" apply -f - <<EOF
+        apiVersion: storage.k8s.io/v1
+        kind: StorageClass
+        metadata:
+          name: ceph-block-local
+        provisioner: kubernetes.io/no-provisioner
+        volumeBindingMode: WaitForFirstConsumer
+        ---
+        apiVersion: v1
+        kind: PersistentVolume
+        metadata:
+          name: ceph-osd-pv
+        spec:
+          capacity:
+            storage: 5Gi
+          volumeMode: Block
+          accessModes:
+            - ReadWriteOnce
+          persistentVolumeReclaimPolicy: Retain
+          storageClassName: ceph-block-local
+          local:
+            path: /dev/ceph-vg-${profile}/ceph-lv
+          nodeAffinity:
+            required:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                        - ${profile}
+        EOF
+          echo "Created OSD disk + local PV for $profile"
+        done
+
+    - name: Copy host udev data into minikube containers
+      run: |
+        set -euo pipefail
+        udevadm settle
+        for profile in dr1 dr2; do
+          tar -C /run/udev -cf - data \
+            | docker exec -i "$profile" sh -c 'mkdir -p /run/udev && tar -C /run/udev -xf -'
+          echo "Copied udev data to $profile: $(docker exec "$profile" ls /run/udev/data/ | wc -l) entries"
+        done
+
+    - name: Pre-load Ceph images into minikube
+      run: |
+        set -euo pipefail
+        IMAGES=(
+          quay.io/ceph/ceph:v20.2.0
+          docker.io/rook/ceph:v1.19.7
+          quay.io/cephcsi/cephcsi:v3.16.2
+        )
+        ts() { date +%H:%M:%S; }
+
+        echo "[$(ts)] Pulling images to host docker..."
+        pids=()
+        for img in "${IMAGES[@]}"; do
+          docker pull "$img" &
+          pids+=($!)
+        done
+        for pid in "${pids[@]}"; do wait "$pid"; done
+        echo "[$(ts)] Host pulls complete"
+
+        # Load sequentially within each profile to avoid OOM.
+        # Parallel across profiles is safe (separate containerd instances).
+        load_profile() {
+          local profile=$1
+          for img in "${IMAGES[@]}"; do
+            echo "[$(ts)] Loading $img → $profile"
+            local start=$SECONDS
+            minikube image load "$img" --profile "$profile"
+            echo "[$(ts)] $img → $profile done ($((SECONDS - start))s)"
+          done
+        }
+        load_profile dr1 &
+        pid1=$!
+        load_profile dr2 &
+        pid2=$!
+        wait "$pid1"
+        wait "$pid2"
+        echo "[$(ts)] All images loaded"
+
+    - name: Verify images loaded and reclaim disk
+      run: |
+        set -euo pipefail
+        for profile in dr1 dr2; do
+          echo "=== Images in $profile ==="
+          minikube image ls --profile "$profile" 2>/dev/null | grep -E 'ceph|rook' || true
+        done
+        # Images now in minikube containerd — remove from host docker to reclaim disk
+        docker image prune -af
+        echo "=== Host resources ==="
+        free -h; df -h /
+
+    - name: Start addons
+      timeout-minutes: 45
+      working-directory: test
+      run: |
+        source ../venv
+        drenv start --skip-tests --max-workers ${{ env.MAX_WORKERS }} envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Build ramen-operator container
+      run: make docker-build
+
+    - name: Install VolumeGroupSnapshot CRDs
+      run: |
+        set -euo pipefail
+        # Ramen imports github.com/red-hat-storage/external-snapshotter which
+        # registers groupsnapshot.storage.openshift.io types. The CRD YAMLs
+        # in the repo use k8s.io group — sed-replace to openshift.io.
+        RHS_TAG="v8.2.1"
+        RHS_BASE="https://raw.githubusercontent.com/red-hat-storage/external-snapshotter/${RHS_TAG}/client/config/crd"
+        CRDS=(
+          groupsnapshot.storage.k8s.io_volumegroupsnapshotclasses.yaml
+          groupsnapshot.storage.k8s.io_volumegroupsnapshotcontents.yaml
+          groupsnapshot.storage.k8s.io_volumegroupsnapshots.yaml
+        )
+        for profile in dr1 dr2; do
+          for crd in "${CRDS[@]}"; do
+            curl -fsSL "${RHS_BASE}/${crd}" \
+              | sed 's/groupsnapshot\.storage\.k8s\.io/groupsnapshot.storage.openshift.io/g' \
+              | kubectl --context "$profile" apply -f -
+          done
+        done
+
+    - name: Install VolSync CRDs
+      run: |
+        set -euo pipefail
+        VOLSYNC_BASE="https://raw.githubusercontent.com/backube/volsync/v0.16.0/config/crd/bases"
+        for profile in dr1 dr2; do
+          for crd in volsync.backube_replicationsources.yaml volsync.backube_replicationdestinations.yaml; do
+            curl -fsSL "${VOLSYNC_BASE}/${crd}" | kubectl --context "$profile" apply -f -
+          done
+        done
+
+    - name: Install controller-gen and kustomize
+      run: |
+        set -euo pipefail
+        mkdir -p bin
+        # controller-gen — pre-built binary (no Go needed)
+        curl -fSL -o bin/controller-gen "https://github.com/kubernetes-sigs/controller-tools/releases/download/v0.18.0/controller-gen-linux-amd64"
+        chmod +x bin/controller-gen
+        bin/controller-gen --version
+        # kustomize — pre-built tarball
+        curl -fSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.0/kustomize_v5.7.0_linux_amd64.tar.gz" \
+          | tar xz -C bin
+        bin/kustomize version
+
+    - name: Deploy ramen
+      run: |
+        set -euo pipefail
+        echo "=== Resources before deploy ==="
+        free -h; df -h /
+        export PATH="$PWD/bin:$PATH"
+        source venv
+        ramendev deploy test/envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Configure ramen
+      uses: nick-fields/retry@v4
+      with:
+        timeout_seconds: 300
+        max_attempts: 3
+        command: |
+          source venv
+          ramendev config test/envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Prepare e2e config
+      working-directory: e2e
+      run: |
+        ENV_NAME="minikube-dr-${{ matrix.profile }}"
+        cat config-${ENV_NAME}.yaml ~/.config/drenv/${ENV_NAME}/config.yaml > config.yaml
+
+    - name: Run e2e validation
+      working-directory: e2e
+      run: |
+        echo e2e/validation.log >> "$GITHUB_WORKSPACE/artifacts.txt"
+        ./run.sh -test.run TestValidation -logfile validation.log
+
+    - name: Run e2e dr tests
+      working-directory: e2e
+      run: |
+        echo e2e/dr.log >> "$GITHUB_WORKSPACE/artifacts.txt"
+        ./run.sh -test.run TestDR -logfile dr.log
+
+    - name: Debug Ceph OSD state
+      if: always()
+      run: |
+        for profile in dr1 dr2; do
+          echo "======== $profile ========"
+          echo "--- PV/PVC ---"
+          kubectl --context "$profile" get pv,pvc -A 2>/dev/null || true
+          echo "--- StorageClass ---"
+          kubectl --context "$profile" get sc 2>/dev/null || true
+          echo "--- CephCluster status ---"
+          kubectl --context "$profile" -n rook-ceph get cephcluster -o yaml 2>/dev/null | grep -A20 'status:' | head -30 || true
+          echo "--- OSD prepare pods ---"
+          kubectl --context "$profile" -n rook-ceph get pods -l app=rook-ceph-osd-prepare -o wide 2>/dev/null || true
+          echo "--- OSD prepare pod events ---"
+          for pod in $(kubectl --context "$profile" -n rook-ceph get pods -l app=rook-ceph-osd-prepare -o name 2>/dev/null); do
+            echo "Events: $pod"
+            kubectl --context "$profile" -n rook-ceph describe "$pod" 2>/dev/null | grep -A20 'Events:' || true
+            echo "Logs: $pod"
+            kubectl --context "$profile" -n rook-ceph logs "$pod" --all-containers --tail=50 2>/dev/null || true
+            echo "Previous logs: $pod"
+            kubectl --context "$profile" -n rook-ceph logs "$pod" --all-containers --previous --tail=50 2>/dev/null || true
+          done
+          echo "--- OSD prepare jobs ---"
+          kubectl --context "$profile" -n rook-ceph get jobs -l app=rook-ceph-osd-prepare 2>/dev/null || true
+          echo "--- Rook operator logs (last 30) ---"
+          kubectl --context "$profile" -n rook-ceph logs deploy/rook-ceph-operator --tail=30 2>/dev/null || true
+          echo "--- All rook-ceph pods ---"
+          kubectl --context "$profile" -n rook-ceph get pods -o wide 2>/dev/null || true
+          echo "--- CSI RBD nodeplugin logs (last 50) ---"
+          for pod in $(kubectl --context "$profile" -n rook-ceph get pods -l app=csi-rbdplugin -o name 2>/dev/null); do
+            echo "=== $pod ==="
+            kubectl --context "$profile" -n rook-ceph logs "$pod" -c csi-rbdplugin --tail=50 2>/dev/null || true
+          done
+          echo "--- Ramen operator pods ---"
+          kubectl --context "$profile" -n ramen-system get pods -o wide 2>/dev/null || true
+          echo "--- Ramen hub operator logs (last 50) ---"
+          kubectl --context "$profile" -n ramen-system logs deploy/ramen-hub-operator --tail=50 2>/dev/null || true
+          echo "--- Ramen dr-cluster operator logs (last 30) ---"
+          kubectl --context "$profile" -n ramen-system logs deploy/ramen-dr-cluster-operator --tail=30 2>/dev/null || true
+          echo "--- OCM policies ---"
+          kubectl --context "$profile" get policies.policy.open-cluster-management.io -A 2>/dev/null || true
+          echo "--- ManifestWorks ---"
+          kubectl --context "$profile" get manifestworks -A 2>/dev/null || true
+          echo "--- ManifestWork ramen-dr-cluster status ---"
+          for ns in dr1 dr2; do
+            kubectl --context "$profile" get manifestwork ramen-dr-cluster -n "$ns" -o yaml 2>/dev/null | grep -A30 'status:' | head -40 || true
+          done
+          echo "--- Klusterlet pods ---"
+          kubectl --context "$profile" -n open-cluster-management-agent get pods -o wide 2>/dev/null || true
+          echo "--- Klusterlet work-agent logs (last 30) ---"
+          kubectl --context "$profile" -n open-cluster-management-agent logs deploy/klusterlet-work-agent --tail=30 2>/dev/null || true
+          echo "--- ManagedClusters ---"
+          kubectl --context "$profile" get managedclusters 2>/dev/null || true
+          echo "--- DRClusters ---"
+          kubectl --context "$profile" get drclusters 2>/dev/null || true
+          echo "--- DRPolicies ---"
+          kubectl --context "$profile" get drpolicies 2>/dev/null || true
+          echo "--- E2E workload pods ---"
+          for ns in $(kubectl --context "$profile" get ns -o name 2>/dev/null | grep test-disapp); do
+            nsname=${ns#namespace/}
+            echo "Namespace: $nsname"
+            kubectl --context "$profile" -n "$nsname" get pods,pvc -o wide 2>/dev/null || true
+            kubectl --context "$profile" -n "$nsname" describe pods 2>/dev/null | grep -A5 'Events:\|State:\|Reason:' | head -30 || true
+          done
+          echo "--- VRG status ---"
+          kubectl --context "$profile" -n ramen-ops get vrg -o wide 2>/dev/null || true
+          echo "--- DRPC status ---"
+          kubectl --context "$profile" -n ramen-ops get drpc -o wide 2>/dev/null || true
+          echo "--- Ramen dr-cluster operator logs (last 50) ---"
+          kubectl --context "$profile" -n ramen-system logs deploy/ramen-dr-cluster-operator --tail=50 2>/dev/null || true
+        done
+
+    - name: Gather environment data
+      if: always()
+      working-directory: test
+      timeout-minutes: 3
+      run: |
+        echo test/gather >> "$GITHUB_WORKSPACE/artifacts.txt"
+        source ../venv
+        drenv gather --directory gather envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Archive artifacts
+      if: always()
+      run: |
+        # Filter out missing paths before archiving
+        xargs -a artifacts.txt -I{} sh -c 'test -e "{}" && echo "{}"' > artifacts-exist.txt || true
+        if [ -s artifacts-exist.txt ]; then
+          tar --create \
+              --gzip \
+              --file e2e-minikube.${{ env.BUILD_ID }}.tar.gz \
+              --transform "s|^|e2e-minikube.${{ env.BUILD_ID }}/|" \
+              --files-from artifacts-exist.txt
+        fi
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: e2e-minikube-${{ matrix.profile }}.${{ env.BUILD_ID }}
+        path: e2e-minikube.${{ env.BUILD_ID }}.tar.gz
+        compression-level: 0
+        retention-days: 15
+
+    - name: Delete clusters
+      if: always()
+      working-directory: test
+      run: |
+        source ../venv
+        drenv delete envs/minikube-dr-${{ matrix.profile }}.yaml
+
+    - name: Cleanup drenv
+      if: always()
+      working-directory: test
+      run: |
+        source ../venv
+        drenv cleanup envs/minikube-dr-${{ matrix.profile }}.yaml

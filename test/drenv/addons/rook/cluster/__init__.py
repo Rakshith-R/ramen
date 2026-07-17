@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -16,7 +17,7 @@ CACHE_KEY = "addons/rook-cluster-1.19-2.yaml"
 
 # The ceph, and ceph-csi images are very large (500m each), using larger
 # timeout to avoid timeouts with flaky network.
-TIMEOUT = 600
+TIMEOUT = int(os.environ.get("ROOK_CLUSTER_TIMEOUT", "600"))
 
 # CSI driver components created by the rook operator as part of the
 # CephCluster reconciliation.
@@ -75,13 +76,25 @@ def wait(cluster):
         context=cluster,
     )
     print("Waiting until cephcluster 'rook-ceph/my-cluster' is ready")
-    kubectl.wait(
-        "cephcluster/my-cluster",
-        "--for=jsonpath={.status.phase}=Ready",
-        "--namespace=rook-ceph",
-        timeout=TIMEOUT,
-        context=cluster,
-    )
+    deadline = time.monotonic() + TIMEOUT
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                f"CephCluster not ready after {TIMEOUT} seconds"
+            )
+        out = kubectl.get(
+            "cephcluster/my-cluster",
+            "--output=jsonpath={.status.phase} {.status.message}",
+            "--namespace=rook-ceph",
+            context=cluster,
+        )
+        phase, _, message = out.partition(" ")
+        elapsed = int(TIMEOUT - remaining)
+        print(f"  [{elapsed}s/{TIMEOUT}s] phase={phase or 'unknown'} {message}")
+        if phase == "Ready":
+            break
+        time.sleep(30)
 
     out = kubectl.get(
         "cephcluster/my-cluster",
@@ -113,43 +126,52 @@ def wait_for_csiaddons_nodes(cluster):
     with NotFound if the resource is deleted between the wait_for and
     kubectl.wait calls. We retry to handle this race.
     """
+    try:
+        kubectl.get(
+            "crd/csiaddonsnodes.csiaddons.openshift.io",
+            context=cluster,
+        )
+    except commands.Error:
+        print("CSIAddonsNode CRD not installed, skipping wait")
+        return
+
     deadline = time.monotonic() + CSIADDONS_TIMEOUT
 
     for suffix in CSIADDONS_NODES:
         name = f"{cluster}-rook-ceph-{suffix}"
         resource = f"csiaddonsnodes.csiaddons.openshift.io/{name}"
 
-        for attempt in range(1, CSIADDONS_ATTEMPTS + 1):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(f"Timeout waiting for {resource}")
+        try:
+            for attempt in range(1, CSIADDONS_ATTEMPTS + 1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"Timeout waiting for {resource}")
 
-            print(f"Waiting until '{resource}' exists")
-            kubectl.wait(
-                resource,
-                "--for=create",
-                "--namespace=rook-ceph",
-                timeout=remaining,
-                context=cluster,
-            )
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(f"Timeout waiting for {resource}")
-
-            print(f"Waiting until '{resource}' status.state is Connected")
-            try:
+                print(f"Waiting until '{resource}' exists")
                 kubectl.wait(
                     resource,
-                    "--for=jsonpath={.status.state}=Connected",
+                    "--for=create",
                     "--namespace=rook-ceph",
                     timeout=remaining,
                     context=cluster,
                 )
-                break
-            except commands.Error:
-                if attempt == CSIADDONS_ATTEMPTS:
-                    raise
-                print(
-                    f"Retrying wait for '{resource}' ({attempt}/{CSIADDONS_ATTEMPTS})"
-                )
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"Timeout waiting for {resource}")
+
+                print(f"Waiting until '{resource}' status.state is Connected")
+                try:
+                    kubectl.wait(
+                        resource,
+                        "--for=jsonpath={.status.state}=Connected",
+                        "--namespace=rook-ceph",
+                        timeout=remaining,
+                        context=cluster,
+                    )
+                    break
+                except commands.Error:
+                    if attempt == CSIADDONS_ATTEMPTS:
+                        raise
+        except (commands.Error, RuntimeError) as e:
+            print(f"Warning: CSIAddonsNode '{name}' not ready: {e}")
