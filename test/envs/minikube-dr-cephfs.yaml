@@ -18,6 +18,7 @@ ramen:
   topology: regional-dr
   features:
     volsync: true
+    auto_deploy: false
 
 templates:
   - name: "hub-spoke"
