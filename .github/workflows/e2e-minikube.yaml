@@ -241,13 +241,24 @@ jobs:
           done
         done
 
+    - name: Install controller-gen and kustomize
+      run: |
+        set -euo pipefail
+        mkdir -p bin
+        # controller-gen — pre-built binary (no Go needed)
+        curl -fSL -o bin/controller-gen "https://github.com/kubernetes-sigs/controller-tools/releases/download/v0.18.0/controller-gen-linux-amd64"
+        chmod +x bin/controller-gen
+        bin/controller-gen --version
+        # kustomize — pre-built tarball
+        curl -fSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.0/kustomize_v5.7.0_linux_amd64.tar.gz" \
+          | tar xz -C bin
+        bin/kustomize version
+
     - name: Deploy ramen
       run: |
         set -euo pipefail
         echo "=== Resources before deploy ==="
         free -h; df -h /
-        # controller-gen and kustomize are installed to ./bin by make targets
-        make controller-gen kustomize
         export PATH="$PWD/bin:$PATH"
         source venv
         ramendev deploy test/envs/minikube-dr-${{ matrix.profile }}.yaml
