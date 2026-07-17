@@ -331,6 +331,18 @@ jobs:
           kubectl --context "$profile" -n ramen-system logs deploy/ramen-dr-cluster-operator --tail=30 2>/dev/null || true
           echo "--- OCM policies ---"
           kubectl --context "$profile" get policies.policy.open-cluster-management.io -A 2>/dev/null || true
+          echo "--- ManifestWorks ---"
+          kubectl --context "$profile" get manifestworks -A 2>/dev/null || true
+          echo "--- ManifestWork ramen-dr-cluster status ---"
+          for ns in dr1 dr2; do
+            kubectl --context "$profile" get manifestwork ramen-dr-cluster -n "$ns" -o yaml 2>/dev/null | grep -A30 'status:' | head -40 || true
+          done
+          echo "--- Klusterlet pods ---"
+          kubectl --context "$profile" -n open-cluster-management-agent get pods -o wide 2>/dev/null || true
+          echo "--- Klusterlet work-agent logs (last 30) ---"
+          kubectl --context "$profile" -n open-cluster-management-agent logs deploy/klusterlet-work-agent --tail=30 2>/dev/null || true
+          echo "--- ManagedClusters ---"
+          kubectl --context "$profile" get managedclusters 2>/dev/null || true
           echo "--- DRClusters ---"
           kubectl --context "$profile" get drclusters 2>/dev/null || true
           echo "--- DRPolicies ---"
