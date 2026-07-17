@@ -246,6 +246,16 @@ jobs:
           done
         done
 
+    - name: Install VolSync CRDs
+      run: |
+        set -euo pipefail
+        VOLSYNC_BASE="https://raw.githubusercontent.com/backube/volsync/v0.16.0/config/crd/bases"
+        for profile in dr1 dr2; do
+          for crd in volsync.backube_replicationsources.yaml volsync.backube_replicationdestinations.yaml; do
+            curl -fsSL "${VOLSYNC_BASE}/${crd}" | kubectl --context "$profile" apply -f -
+          done
+        done
+
     - name: Install controller-gen and kustomize
       run: |
         set -euo pipefail
