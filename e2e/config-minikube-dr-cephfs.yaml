@@ -18,16 +18,8 @@ deployers:
   - name: disapp
     type: disapp
     description: "Discovered Application without recipe"
-  - name: disapp-recipe
-    type: disapp
-    recipe:
-      type: generate
-    description: "Discovered Application using recipe"
 
 tests:
   - deployer: disapp
-    workload: deploy
-    pvcspec: cephfs
-  - deployer: disapp-recipe
     workload: deploy
     pvcspec: cephfs

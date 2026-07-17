@@ -357,6 +357,19 @@ jobs:
           kubectl --context "$profile" get drclusters 2>/dev/null || true
           echo "--- DRPolicies ---"
           kubectl --context "$profile" get drpolicies 2>/dev/null || true
+          echo "--- E2E workload pods ---"
+          for ns in $(kubectl --context "$profile" get ns -o name 2>/dev/null | grep test-disapp); do
+            nsname=${ns#namespace/}
+            echo "Namespace: $nsname"
+            kubectl --context "$profile" -n "$nsname" get pods,pvc -o wide 2>/dev/null || true
+            kubectl --context "$profile" -n "$nsname" describe pods 2>/dev/null | grep -A5 'Events:\|State:\|Reason:' | head -30 || true
+          done
+          echo "--- VRG status ---"
+          kubectl --context "$profile" -n ramen-ops get vrg -o wide 2>/dev/null || true
+          echo "--- DRPC status ---"
+          kubectl --context "$profile" -n ramen-ops get drpc -o wide 2>/dev/null || true
+          echo "--- Ramen dr-cluster operator logs (last 50) ---"
+          kubectl --context "$profile" -n ramen-system logs deploy/ramen-dr-cluster-operator --tail=50 2>/dev/null || true
         done
 
     - name: Gather environment data
