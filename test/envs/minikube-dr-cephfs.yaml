@@ -38,6 +38,7 @@ templates:
           - name: ocm-hub
           - name: ocm-controller
       - addons:
+          - name: csi-addons
           - name: ocm-cluster
             args: ["$name", "$name"]
       - addons:
@@ -58,6 +59,7 @@ templates:
           - name: rook-cephfs
           - name: rook-toolbox
       - addons:
+          - name: csi-addons
           - name: ocm-cluster
             args: ["$name", "dr1"]
       - addons:
