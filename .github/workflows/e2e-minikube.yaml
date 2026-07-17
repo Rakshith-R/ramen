@@ -89,6 +89,12 @@ jobs:
         source ../venv
         drenv setup envs/minikube-dr-${{ matrix.profile }}.yaml
 
+    - name: Load kernel modules for Ceph RBD
+      run: |
+        sudo modprobe rbd || echo "WARNING: rbd module not available"
+        sudo modprobe nbd || echo "WARNING: nbd module not available"
+        lsmod | grep -E 'rbd|nbd' || true
+
     - name: Start minikube clusters
       working-directory: test
       run: |
@@ -333,6 +339,11 @@ jobs:
           kubectl --context "$profile" -n rook-ceph logs deploy/rook-ceph-operator --tail=30 2>/dev/null || true
           echo "--- All rook-ceph pods ---"
           kubectl --context "$profile" -n rook-ceph get pods -o wide 2>/dev/null || true
+          echo "--- CSI RBD nodeplugin logs (last 50) ---"
+          for pod in $(kubectl --context "$profile" -n rook-ceph get pods -l app=csi-rbdplugin -o name 2>/dev/null); do
+            echo "=== $pod ==="
+            kubectl --context "$profile" -n rook-ceph logs "$pod" -c csi-rbdplugin --tail=50 2>/dev/null || true
+          done
           echo "--- Ramen operator pods ---"
           kubectl --context "$profile" -n ramen-system get pods -o wide 2>/dev/null || true
           echo "--- Ramen hub operator logs (last 50) ---"
