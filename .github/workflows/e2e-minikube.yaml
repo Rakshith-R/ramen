@@ -291,7 +291,7 @@ jobs:
       working-directory: e2e
       run: |
         ENV_NAME="minikube-dr-${{ matrix.profile }}"
-        cat config.yaml.sample ~/.config/drenv/${ENV_NAME}/config.yaml > config.yaml
+        cat config-${ENV_NAME}.yaml ~/.config/drenv/${ENV_NAME}/config.yaml > config.yaml
 
     - name: Run e2e validation
       working-directory: e2e

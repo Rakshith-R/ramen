@@ -1,0 +1,33 @@
+# E2E config for minikube-dr-cephfs environment.
+# CephFS-only — no RBD pool available.
+---
+repo:
+  url: "https://github.com/RamenDR/ocm-ramen-samples.git"
+  branch: main
+
+drPolicy: dr-policy-1m
+
+clusterSet: default
+
+pvcspecs:
+  - name: cephfs
+    storageclassname: rook-cephfs-fs1
+    accessmodes: ReadWriteMany
+
+deployers:
+  - name: disapp
+    type: disapp
+    description: "Discovered Application without recipe"
+  - name: disapp-recipe
+    type: disapp
+    recipe:
+      type: generate
+    description: "Discovered Application using recipe"
+
+tests:
+  - deployer: disapp
+    workload: deploy
+    pvcspec: cephfs
+  - deployer: disapp-recipe
+    workload: deploy
+    pvcspec: cephfs
