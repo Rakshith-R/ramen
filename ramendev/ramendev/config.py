@@ -24,14 +24,21 @@ def run(args):
     s3_secrets = generate_ramen_s3_secrets(env["clusters"], args)
 
     if env["hub"]:
+        auto_deploy = env["features"].get("auto_deploy", True)
         hub_cm = generate_config_map("hub", env, args)
 
         create_ramen_s3_secrets(env["hub"], s3_secrets)
 
+        if not auto_deploy:
+            for cluster in env["clusters"]:
+                if cluster != env["hub"]:
+                    create_ramen_s3_secrets(cluster, s3_secrets)
+
         create_ramen_config_map(env["hub"], hub_cm)
         create_hub_dr_resources(env["hub"], env["clusters"], env["topology"])
 
-        wait_for_secret_propagation(env["hub"], env["clusters"], args)
+        if auto_deploy:
+            wait_for_secret_propagation(env["hub"], env["clusters"], args)
         wait_for_dr_clusters(env["hub"], env["clusters"], args)
         wait_for_dr_policy(env["hub"], args)
 
