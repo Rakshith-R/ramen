@@ -1,0 +1,234 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+
+# yamllint disable rule:line-length
+---
+name: e2e-minikube
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "DR profile to test"
+        required: true
+        default: "rbd"
+        type: choice
+        options:
+          - rbd
+          - cephfs
+
+permissions:
+  contents: read
+
+env:
+  MAX_WORKERS: 1
+  BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.profile)) || fromJSON('["rbd", "cephfs"]') }}
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /usr/share/swift /opt/hostedtoolcache \
+            /usr/local/share/powershell /usr/local/share/chromium \
+            /usr/local/share/edge &
+          wait
+          sudo docker image prune -af
+          df -h /; free -h
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize artifacts list
+        run: touch artifacts.txt
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install CLI tools
+        run: |
+          set -euo pipefail
+          curl -fSL "https://github.com/open-cluster-management-io/clusteradm/releases/download/v0.11.2/clusteradm_linux_amd64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin clusteradm
+          curl -fSL "https://github.com/vmware-tanzu/velero/releases/download/v1.16.1/velero-v1.16.1-linux-amd64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin --strip-components=1 velero-v1.16.1-linux-amd64/velero
+          curl -fSL -o /tmp/mc "https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2025-08-13T08-35-41Z"
+          sudo install /tmp/mc /usr/local/bin/mc
+          curl -fSL -o /tmp/kubectl-gather "https://github.com/nirs/kubectl-gather/releases/download/v0.13.0/kubectl-gather-v0.13.0-linux-amd64"
+          sudo install /tmp/kubectl-gather /usr/local/bin/kubectl-gather
+          curl -fSL "https://github.com/submariner-io/subctl/releases/download/subctl-devel/subctl-devel-linux-amd64.tar.xz" \
+            | sudo tar xJ -C /usr/local/bin --strip-components=1 subctl-devel/subctl
+
+      - name: Create virtual environment
+        run: hack/make-venv .venv
+
+      - name: Setup drenv
+        working-directory: test
+        run: |
+          echo test/drenv.log >> "$GITHUB_WORKSPACE/artifacts.txt"
+          source ../venv
+          drenv setup envs/minikube-dr-${{ matrix.profile }}.yaml
+
+      - name: Start minikube clusters
+        working-directory: test
+        run: |
+          source ../venv
+          drenv start --skip-addons --skip-tests envs/minikube-dr-${{ matrix.profile }}.yaml
+
+      - name: Prepare minikube environment
+        run: |
+          # rbd-nbd needs both modules on the host (shared kernel).
+          # nbd max_part=0 avoids partition scanning on nbd devices.
+          sudo modprobe rbd || true
+          sudo modprobe nbd max_part=0 || true
+          source venv
+          source hack/minikube-e2e-helpers.sh
+          patch_kustomize_for_minikube
+          udevadm settle
+          for profile in dr1 dr2; do
+            setup_osd_disk "$profile"
+            copy_udev_data "$profile"
+            create_nbd_devices "$profile"
+          done
+          pull_ceph_images
+
+      # Build sequentially before addons to avoid CPU contention on
+      # 4-CPU GHA runners. Parallel build + Ceph OSD init causes
+      # rook-cluster and minio timeouts.
+      - name: Build ramen-operator image
+        run: make docker-build
+
+      - name: Start addons
+        timeout-minutes: 30
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 25
+          max_attempts: 2
+          command: |
+            cd test
+            source ../venv
+            drenv start --skip-tests --max-workers ${{ env.MAX_WORKERS }} envs/minikube-dr-${{ matrix.profile }}.yaml
+
+      - name: Install extra CRDs
+        run: |
+          source hack/minikube-e2e-helpers.sh
+          for profile in dr1 dr2; do
+            install_extra_crds "$profile"
+          done
+
+      - name: Deploy ramen
+        run: |
+          source venv
+          ramendev deploy test/envs/minikube-dr-${{ matrix.profile }}.yaml
+
+      - name: Configure ramen
+        uses: nick-fields/retry@v4
+        with:
+          timeout_seconds: 120
+          max_attempts: 3
+          command: |
+            source venv
+            ramendev config test/envs/minikube-dr-${{ matrix.profile }}.yaml
+
+      - name: Prepare e2e config
+        working-directory: e2e
+        run: |
+          ENV_NAME="minikube-dr-${{ matrix.profile }}"
+          cat config-${ENV_NAME}.yaml ~/.config/drenv/${ENV_NAME}/config.yaml > config.yaml
+
+      - name: Run e2e validation
+        working-directory: e2e
+        run: |
+          echo e2e/validation.log >> "$GITHUB_WORKSPACE/artifacts.txt"
+          ./run.sh -test.run TestValidation -logfile validation.log
+
+      # Restart gateway + lighthouse pods right before DR tests to
+      # rebuild globalnet iptables and DNS state. Then re-verify
+      # bidirectional connectivity to ensure VolSync rsync-tls path works.
+      - name: Refresh and re-verify Submariner tunnel
+        if: matrix.profile == 'cephfs'
+        timeout-minutes: 10
+        working-directory: test
+        run: |
+          source ../hack/minikube-e2e-helpers.sh
+          refresh_submariner_tunnel
+          source ../venv
+          python3 -c "from drenv.addons.submariner.test import test; test('dr1', 'dr1', 'dr2')"
+
+      - name: Run e2e dr tests
+        env:
+          E2E_ENABLE_TIMEOUT: ${{ matrix.profile == 'cephfs' && '15m' || '' }}
+          E2E_FAILOVER_TIMEOUT: ${{ matrix.profile == 'cephfs' && '20m' || '' }}
+          E2E_RELOCATE_TIMEOUT: ${{ matrix.profile == 'cephfs' && '20m' || '' }}
+          E2E_REFRESH_TUNNEL: ${{ matrix.profile == 'cephfs' && 'true' || '' }}
+        run: |
+          echo e2e/dr.log >> "$GITHUB_WORKSPACE/artifacts.txt"
+          cd e2e
+          ./run.sh -test.run TestDR -logfile dr.log
+
+      - name: Debug state
+        if: always()
+        run: |
+          source hack/minikube-e2e-helpers.sh
+          for profile in dr1 dr2; do
+            collect_debug "$profile"
+          done
+
+      - name: Gather environment data
+        if: always()
+        working-directory: test
+        timeout-minutes: 3
+        run: |
+          echo test/gather >> "$GITHUB_WORKSPACE/artifacts.txt"
+          source ../venv
+          drenv gather --directory gather envs/minikube-dr-${{ matrix.profile }}.yaml
+
+      - name: Archive artifacts
+        if: always()
+        run: |
+          xargs -a artifacts.txt -I{} sh -c 'test -e "{}" && echo "{}"' > artifacts-exist.txt || true
+          if [ -s artifacts-exist.txt ]; then
+            tar --create --gzip \
+                --file e2e-minikube.${{ env.BUILD_ID }}.tar.gz \
+                --transform "s|^|e2e-minikube.${{ env.BUILD_ID }}/|" \
+                --files-from artifacts-exist.txt
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-minikube-${{ matrix.profile }}.${{ env.BUILD_ID }}
+          path: e2e-minikube.${{ env.BUILD_ID }}.tar.gz
+          compression-level: 0
+          retention-days: 15
+
+      - name: Delete clusters
+        if: always()
+        working-directory: test
+        run: |
+          source ../venv
+          drenv delete envs/minikube-dr-${{ matrix.profile }}.yaml
+
+      - name: Cleanup drenv
+        if: always()
+        working-directory: test
+        run: |
+          source ../venv
+          drenv cleanup envs/minikube-dr-${{ matrix.profile }}.yaml

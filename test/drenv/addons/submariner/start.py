@@ -9,7 +9,7 @@ from drenv import cluster as drenv_cluster
 from drenv import kubectl
 from drenv import subctl
 
-VERSION = "devel"
+VERSION = os.environ.get("SUBMARINER_VERSION", "devel")
 
 NAMESPACE = "submariner-operator"
 
@@ -22,11 +22,19 @@ CLUSTER_DEPLOYMENTS = (
 )
 
 
-def start(broker, *clusters):
+def start(broker, *args):
+    globalnet = True
+    clusters = []
+    for arg in args:
+        if arg == "--no-globalnet":
+            globalnet = False
+        else:
+            clusters.append(arg)
+
     for cluster in [broker, *clusters]:
         drenv_cluster.wait_until_ready(cluster)
 
-    broker_info = deploy_broker(broker)
+    broker_info = deploy_broker(broker, globalnet=globalnet)
 
     for cluster in clusters:
         join_cluster(cluster, broker_info)
@@ -38,13 +46,16 @@ def start(broker, *clusters):
         wait_for_cluster(cluster)
 
     for cluster in clusters:
+        clamp_tcp_mss(cluster)
+
+    for cluster in clusters:
         restart_coredns(cluster)
 
     for cluster in clusters:
         wait_for_coredns(cluster)
 
 
-def deploy_broker(broker):
+def deploy_broker(broker, globalnet=True):
     print(f"Waiting until broker '{broker}' is ready")
     drenv_cluster.wait_until_ready(broker)
 
@@ -54,10 +65,10 @@ def deploy_broker(broker):
     print(f"Creating submariner configuration directory '{broker_dir}'")
     os.makedirs(broker_dir, exist_ok=True)
 
-    print(f"Deploying submariner broker in cluster '{broker}'")
+    print(f"Deploying submariner broker in cluster '{broker}' (globalnet={globalnet})")
     subctl.deploy_broker(
         broker,
-        globalnet=True,
+        globalnet=globalnet,
         broker_info=broker_info,
         version=VERSION,
     )
@@ -132,6 +143,26 @@ def annotate_nodes(cluster):
 def wait_for_cluster(cluster):
     print(f"Waiting for submariner deployuments in cluster '{cluster}'")
     wait_for_deployments(cluster, CLUSTER_DEPLOYMENTS, NAMESPACE)
+
+
+def clamp_tcp_mss(cluster):
+    """
+    Clamp TCP MSS on gateway nodes to avoid fragmentation over VXLAN +
+    globalnet.  Value 1340 leaves room for both encapsulation headers;
+    without it, large rsync-tls packets stall.
+    """
+    print(f"Setting TCP MSS clamp on cluster '{cluster}'")
+    out = kubectl.get("node", "--output=json", context=cluster)
+    nodes = json.loads(out)
+    for node in nodes["items"]:
+        name = node["metadata"]["name"]
+        print(f"Annotating '{name}' with tcp-clamp-mss=1340")
+        kubectl.annotate(
+            f"node/{name}",
+            {"submariner.io/tcp-clamp-mss": "1340"},
+            overwrite=True,
+            context=cluster,
+        )
 
 
 def restart_coredns(cluster):

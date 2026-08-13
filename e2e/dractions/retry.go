@@ -24,6 +24,8 @@ func waitDRPCReady(ctx types.TestContext, namespace string, drpcName string) err
 	log := ctx.Logger()
 	hub := ctx.Env().Hub
 	start := time.Now()
+	tunnelRefreshes := 0
+	lastRefreshTime := time.Time{}
 
 	log.Debugf("Waiting until drpc \"%s/%s\" is ready in cluster %q", namespace, drpcName, hub.Name)
 
@@ -50,6 +52,27 @@ func waitDRPCReady(ctx types.TestContext, namespace string, drpcName string) err
 				namespace, drpcName, hub.Name, elapsed.Seconds())
 
 			return nil
+		}
+
+		// On minikube docker-driver the Submariner tunnel degrades
+		// during long DRPC operations. Re-probe and refresh
+		// periodically (max 3 attempts, 3min apart) when everything
+		// else is ready but sync has not completed.
+		const maxTunnelRefreshes = 3
+		const tunnelRefreshInterval = 3 * time.Minute
+
+		if available && peerReady && progressionCompleted &&
+			drpc.Status.LastGroupSyncTime == nil &&
+			tunnelRefreshes < maxTunnelRefreshes &&
+			(lastRefreshTime.IsZero() || time.Since(lastRefreshTime) >= tunnelRefreshInterval) {
+			tunnelRefreshes++
+			lastRefreshTime = time.Now()
+			log.Debugf("Refreshing Submariner tunnel to unblock VolSync sync (attempt %d/%d)",
+				tunnelRefreshes, maxTunnelRefreshes)
+
+			if err := util.RefreshSubmarinerTunnel(ctx.Context()); err != nil {
+				log.Debugf("Tunnel refresh failed: %v", err)
+			}
 		}
 
 		if err := util.Sleep(ctx.Context(), util.RetryInterval); err != nil {
