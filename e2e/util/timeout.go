@@ -5,6 +5,8 @@ package util
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"time"
 )
 
@@ -55,7 +57,7 @@ import (
         --- PASS: TestDR/appset-deploy-cephfs-busybox/Undeploy (84.14s)
 */
 
-const (
+var (
 	DeployTimeout   = 5 * time.Minute
 	UndeployTimeout = 5 * time.Minute
 	EnableTimeout   = 5 * time.Minute
@@ -71,6 +73,23 @@ const (
 	// Polling internal during wait.
 	RetryInterval = 5 * time.Second
 )
+
+func init() {
+	overrideTimeout("E2E_ENABLE_TIMEOUT", &EnableTimeout)
+	overrideTimeout("E2E_FAILOVER_TIMEOUT", &FailoverTimeout)
+	overrideTimeout("E2E_RELOCATE_TIMEOUT", &RelocateTimeout)
+}
+
+func overrideTimeout(envVar string, target *time.Duration) {
+	if v := os.Getenv(envVar); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			panic(fmt.Sprintf("invalid %s=%q: %v", envVar, v, err))
+		}
+
+		*target = d
+	}
+}
 
 // Sleep pauses the current goroutine for at least the duration d. If the context was canceled or its deadline has
 // exceeded it will return early with a context.Canceled or a context.DeadlineExceeded error.

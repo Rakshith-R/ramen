@@ -1,11 +1,26 @@
 # SPDX-FileCopyrightText: The RamenDR authors
 # SPDX-License-Identifier: Apache-2.0
 
+import string
+
 import drenv
 from drenv import kubectl
 from drenv import minio
 
 from . import command
+
+VELERO_SECRET_TEMPLATE = string.Template("""\
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $name
+  namespace: velero
+stringData:
+  ramengenerated: |
+    [default]
+    aws_access_key_id = minio
+    aws_secret_access_key = minio123
+""")
 
 
 def register(commands):
@@ -24,14 +39,24 @@ def run(args):
     s3_secrets = generate_ramen_s3_secrets(env["clusters"], args)
 
     if env["hub"]:
+        auto_deploy = env["features"].get("auto_deploy", True)
         hub_cm = generate_config_map("hub", env, args)
 
         create_ramen_s3_secrets(env["hub"], s3_secrets)
 
+        if not auto_deploy:
+            dr_cluster_cm = generate_config_map("dr-cluster", env, args)
+            for cluster in env["clusters"]:
+                create_ramen_ops_namespace(cluster)
+                create_ramen_s3_secrets(cluster, s3_secrets)
+                create_velero_s3_secrets(cluster, env["clusters"], args)
+                create_ramen_config_map(cluster, dr_cluster_cm)
+
         create_ramen_config_map(env["hub"], hub_cm)
         create_hub_dr_resources(env["hub"], env["clusters"], env["topology"])
 
-        wait_for_secret_propagation(env["hub"], env["clusters"], args)
+        if auto_deploy:
+            wait_for_secret_propagation(env["hub"], env["clusters"], args)
         wait_for_dr_clusters(env["hub"], env["clusters"], args)
         wait_for_dr_policy(env["hub"], args)
 
@@ -66,7 +91,7 @@ def generate_config_map(controller, env, args):
     template = drenv.template(command.resource("configmap.yaml"))
     return template.substitute(
         name=f"ramen-{controller}-operator-config",
-        auto_deploy="true",
+        auto_deploy="true" if env["features"].get("auto_deploy", True) else "false",
         cluster1=clusters[0],
         cluster2=clusters[1],
         minio_url_cluster1=minio.service_url(clusters[0]),
@@ -78,6 +103,27 @@ def generate_config_map(controller, env, args):
 
 def create_ramen_config_map(cluster, yaml):
     command.info("Updating ramen config map in cluster '%s'", cluster)
+    kubectl.apply("--filename=-", input=yaml, context=cluster, log=command.debug)
+
+
+def create_velero_s3_secrets(cluster, clusters, _args):
+    """Create Velero-formatted s3 credential secrets in the velero namespace.
+
+    With auto_deploy=true, these are propagated via OCM ConfigurationPolicy.
+    With auto_deploy=false, we must create them directly. The VRG controller
+    references secret "v<ramen-s3-secret-name>" with key "ramengenerated"
+    in the velero namespace when creating BackupStorageLocations.
+    """
+    command.info("Creating velero s3 secrets in cluster '%s'", cluster)
+    for c in clusters:
+        velero_secret_name = f"vramen-s3-secret-{c}"
+        yaml = VELERO_SECRET_TEMPLATE.substitute(name=velero_secret_name)
+        kubectl.apply("--filename=-", input=yaml, context=cluster, log=command.debug)
+
+
+def create_ramen_ops_namespace(cluster):
+    command.info("Creating ramen-ops namespace in cluster '%s'", cluster)
+    yaml = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: ramen-ops\n"
     kubectl.apply("--filename=-", input=yaml, context=cluster, log=command.debug)
 
 
@@ -111,7 +157,7 @@ def wait_for_secret_propagation(hub, clusters, args):
             f"policy/{policy}",
             "--for=create",
             f"--namespace={cluster}",
-            timeout=60,
+            timeout=180,
             context=hub,
             log=command.debug,
         )
@@ -120,7 +166,7 @@ def wait_for_secret_propagation(hub, clusters, args):
             f"policy/{policy}",
             "--for=jsonpath={.status.compliant}=Compliant",
             f"--namespace={cluster}",
-            timeout=60,
+            timeout=180,
             context=hub,
             log=command.debug,
         )

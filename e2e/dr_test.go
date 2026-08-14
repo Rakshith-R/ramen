@@ -4,6 +4,7 @@
 package e2e_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -84,13 +85,19 @@ func runTestFlow(t *test.T, ctx test.Context) {
 		t.FailNow()
 	}
 
+	refreshTunnel(t, ctx)
+
 	if !t.Run("Enable", ctx.Enable) {
 		t.FailNow()
 	}
 
+	refreshTunnel(t, ctx)
+
 	if !t.Run("Failover", ctx.Failover) {
 		t.FailNow()
 	}
+
+	refreshTunnel(t, ctx)
 
 	if !t.Run("Relocate", ctx.Relocate) {
 		t.FailNow()
@@ -102,5 +109,16 @@ func runTestFlow(t *test.T, ctx test.Context) {
 
 	if !t.Run("Undeploy", ctx.Undeploy) {
 		t.FailNow()
+	}
+}
+
+func refreshTunnel(t *test.T, ctx test.Context) {
+	t.Helper()
+
+	timedCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if err := util.RefreshSubmarinerTunnel(timedCtx); err != nil {
+		t.Fatalf("Tunnel refresh failed: %v", err)
 	}
 }
